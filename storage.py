@@ -29,6 +29,7 @@ def _conn():
 
 
 def init_db() -> None:
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     with _conn() as c:
         c.executescript(SCHEMA)
 

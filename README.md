@@ -37,74 +37,51 @@ The first run creates `med_bot.db` and procedurally generates the 6 sticker PNGs
 | `/month`  | Current month's full sticker chart with stats                |
 | `/chart`  | Alias for `/month`                                           |
 
-## Deploy to Oracle Cloud Always Free (free forever, 24/7)
+## Deploy to Railway (24/7, ~$3–5/month)
 
-[Oracle Cloud Always Free](https://www.oracle.com/cloud/free/) gives you a permanent ARM VM (up to 4 cores, 24 GB RAM, 200 GB block storage). Real cloud infrastructure, no inactivity sleep, won't run out of free slots like the small Discord-bot hosts. The trade-off is ~5–10 minutes of one-time Linux setup, which the bundled `oracle-setup.sh` script automates.
+[Railway](https://railway.app) is the simplest path to a reliable, always-on Discord bot. Auto-deploys on every git push, real persistent storage, no sleep policies. New accounts get a one-time **$5 trial credit** that covers about a month for this bot, then ~$3–5/month after.
 
 ### 1. Sign up
 
-- Go to https://www.oracle.com/cloud/free/ → **Start for free**
-- You'll need an email, phone number (SMS verification), and a credit card **for identity verification only** — Always Free resources never get charged. You can also enable a hard "no upgrade" cap so it can't bill you even by accident.
-- **Pick your Home Region carefully — it's permanent.** For Europe/London, choose **UK South (London)** (`uk-london-1`).
-- Verification typically takes 5–60 minutes; sometimes longer.
+- Go to https://railway.app → **Login with GitHub**
+- Authorize Railway to read your GitHub repos (you can scope to just this one)
 
-### 2. Create an Always Free ARM VM
+### 2. Create the project
 
-In the Oracle Cloud Console:
+- Dashboard → **+ New Project** → **Deploy from GitHub repo**
+- Pick `ahansahu/discord-med-bot`
+- Railway auto-detects Python via `requirements.txt`, runs `pip install`, and reads `Procfile` / `railway.json` (already in this repo) to find the start command (`python bot.py`)
 
-1. **Menu** → **Compute** → **Instances** → **Create Instance**
-2. **Name:** `med-bot`
-3. **Image:** Canonical **Ubuntu 22.04** (or 24.04)
-4. **Shape:** click **Change shape** → **Ampere** → `VM.Standard.A1.Flex` → set to **1 OCPU + 6 GB memory**. The "Always Free Eligible" badge must be visible.
-5. **Networking:** accept defaults (creates a public-IP VCN).
-6. **SSH keys:** either paste your public key or download Oracle's generated keypair — keep the private key file safe.
-7. Hit **Create**. Provisioning takes ~1–2 minutes.
+The first build takes ~1–2 min. **Don't worry that it errors on the first deploy** — it'll fail because env vars aren't set yet; that's expected.
 
-Note the public IP from the instance page.
+### 3. Add a persistent volume (critical — don't skip)
 
-### 3. SSH in
+Without this, your SQLite log resets on every redeploy.
 
-From your local terminal (PowerShell on Windows works fine):
+1. In your project → click the service → **Settings** tab → scroll to **Volumes**
+2. **+ New Volume**
+3. **Mount path:** `/app/data`
+4. **Size:** 1 GB
 
-```powershell
-ssh -i C:\path\to\ssh-key.key ubuntu@<your-public-ip>
-```
+### 4. Set environment variables
 
-### 4. Run the setup script
+In the project → service → **Variables** tab → add each:
 
-Once you're SSH'd in:
+| Variable | Value |
+|----------|-------|
+| `DISCORD_TOKEN` | your bot token |
+| `GUILD_ID` | your server ID |
+| `CHANNEL_ID` | your reminder channel ID |
+| `TARGET_USER_ID` | your Discord user ID |
+| `TIMEZONE` | `Europe/London` |
+| `DB_PATH` | `/app/data/med_bot.db` |
+| `UPTIMEROBOT_HEARTBEAT_URL` | (optional — see [Mitigations](#mitigations)) |
 
-```bash
-curl -O https://raw.githubusercontent.com/ahansahu/discord-med-bot/master/oracle-setup.sh
-chmod +x oracle-setup.sh
-./oracle-setup.sh
-```
+`DB_PATH` is the most important one — it points the SQLite log at the persistent volume so it survives redeploys.
 
-The script:
-- Installs Python, git, build tools
-- Clones this repo to `~/discord-med-bot`
-- Creates a Python venv and installs requirements
-- Generates a `.env` from the template
-- Writes a `systemd` service unit and enables it on boot
+### 5. Redeploy
 
-It takes ~3 minutes and is safe to re-run if anything goes wrong.
-
-### 5. Fill in your env vars
-
-```bash
-nano ~/discord-med-bot/.env
-```
-
-Set `DISCORD_TOKEN`, `GUILD_ID`, `CHANNEL_ID`, `TARGET_USER_ID`. `TIMEZONE` is already pinned to `Europe/London`. Save with `Ctrl+O`, `Enter`, `Ctrl+X`.
-
-### 6. Start the bot
-
-```bash
-sudo systemctl start med-bot
-journalctl -u med-bot -f
-```
-
-You should see:
+After setting variables, Railway auto-redeploys. Watch the **Deployments** → **Logs** tab for:
 
 ```
 logged in as <your-bot-name> (id=...)
@@ -112,27 +89,26 @@ synced 5 guild commands
 scheduler started; jobs=['reminder_11', ...]
 ```
 
-Press `Ctrl+C` to stop tailing (the bot keeps running). Then run `/status` in your Discord channel to confirm — it should reply "no entry for today yet".
+### 6. Verify
 
-The systemd service is configured with `Restart=on-failure`, so if the bot crashes it'll auto-restart within 10 seconds. It also auto-starts on VM reboot.
+In your Discord channel, run `/status` — should reply "no entry for today yet — first reminder fires at 11:00."
 
 ### Updating the bot later
 
-When you push code changes to GitHub, just SSH in and run:
+Just `git push` to GitHub. Railway watches the repo and auto-redeploys (~30s, transparent to you). No SSH, no manual restart.
 
-```bash
-cd ~/discord-med-bot
-./update.sh
-```
+### Cost monitoring
 
-That pulls latest, refreshes Python deps, and restarts the service.
+In your Railway dashboard → **Usage** tab → see live cost trending. This bot runs ~80 MB RAM steady-state, so you'll see ~$0.10/day after the trial credit runs out. Set up a billing alert at $5/month so you're never surprised.
 
-### Operational notes
+### If you want to drop off Railway later
 
-- **Logs:** `journalctl -u med-bot -f` (live tail) or `journalctl -u med-bot -n 200` (last 200 lines)
-- **Stop / start / status:** `sudo systemctl stop|start|restart|status med-bot`
-- **OS updates:** `sudo apt update && sudo apt upgrade -y && sudo reboot` once a month or so. The bot auto-restarts after reboot.
-- **VM reclamation risk:** Oracle has occasionally reclaimed Always Free A1 instances during capacity crunches. `uk-london-1` is generally OK in 2025+. If it ever happens you'd get an email and the VM stops; you'd recreate it (15 min) and restore from your weekly DB backup DM.
+When the trial credit runs out, your options are:
+- Add a card and pay ~$3–5/mo (easiest)
+- Switch to Oracle Cloud Always Free (this repo had setup scripts for that — see git history)
+- Switch to a free Discord-bot host like JustRunMy.App or Discloud (re-add a `discloud.config` etc.)
+
+Your weekly DB backup DM (see [Mitigations](#mitigations)) makes any of these migrations painless — drop the backup file at `med_bot.db` on the new host and your full history is back.
 
 ---
 
@@ -171,11 +147,12 @@ Every **Monday at 10:00 London time**, the bot posts a weekly check-in summary i
 
 ## Restoring from a backup
 
-If you have to redeploy (VM reclaimed, switching providers, etc.):
+If you ever need to restore your medication history (volume corruption, migrating off Railway, etc.):
 
-1. Provision a new VM and run `oracle-setup.sh` again — but **don't start the service yet**.
-2. Copy your most recent `med_bot_backup_<date>.db` (from your Discord DMs) onto the VM at `~/discord-med-bot/med_bot.db`. From your local machine: `scp -i <key> med_bot_backup_<date>.db ubuntu@<new-ip>:~/discord-med-bot/med_bot.db`
-3. Fill in `.env` and `sudo systemctl start med-bot`. The bot picks up where it left off — `/month` will show all your old stickers.
+1. Stop the bot (Railway: pause the service, or scale to 0 replicas).
+2. Get your most recent `med_bot_backup_<date>.db` from your Discord DMs.
+3. **On Railway:** open the service's **Volume** in the dashboard → there's no UI to upload, so the easiest path is to either (a) commit the backup `.db` into the repo at a path like `seed.db`, then add a tiny startup hook that copies it to `$DB_PATH` if missing on first boot, or (b) use Railway's CLI (`railway run`) to scp the file in. The DM-based backup primarily protects you when migrating to a new provider where this is much easier.
+4. **Migrating to another host (e.g. Oracle Cloud, Discloud):** drop the backup file at the host's `DB_PATH` location, then start the bot. `/month` will show all your old stickers.
 
 ## Customizing the schedule
 
@@ -191,12 +168,12 @@ Change those constants and restart the bot. The scheduler uses `Europe/London` s
 ## Project layout
 
 ```
-bot.py             # discord client, events, slash commands
-scheduler.py       # APScheduler cron jobs + heartbeat / backup / weekly summary
-storage.py         # SQLite log + queries
-chart.py           # Pillow sticker chart + procedural sticker drawing
-config.py          # env loader
-oracle-setup.sh    # one-shot Oracle Cloud VM setup
-update.sh          # pull + restart on the deployed VM
-assets/stickers/   # generated on first run
+bot.py            # discord client, events, slash commands
+scheduler.py      # APScheduler cron jobs + heartbeat / backup / weekly summary
+storage.py        # SQLite log + queries
+chart.py          # Pillow sticker chart + procedural sticker drawing
+config.py         # env loader
+Procfile          # start command for Railway / nixpacks
+railway.json      # Railway build + deploy config
+assets/stickers/  # generated on first run
 ```
