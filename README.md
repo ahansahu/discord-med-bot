@@ -37,6 +37,75 @@ The first run creates `med_bot.db` and procedurally generates the 6 sticker PNGs
 | `/month`  | Current month's full sticker chart with stats                |
 | `/chart`  | Alias for `/month`                                           |
 
+## Deploy to Discloud (free, 24/7)
+
+[Discloud](https://discloud.com) is a Discord-bot-specialized free host that's been running since ~2018. Free tier: 256 MB RAM, 24/7 uptime, persistent storage. ~5-minute setup.
+
+### 1. Sign up
+
+- Go to https://discloud.com → **Login with Discord** (uses your existing Discord account)
+- Authorize the OAuth scopes
+- You're dropped into your dashboard
+
+### 2. The config file is already in this repo
+
+`discloud.config` at the project root tells Discloud how to run the bot:
+
+```
+ID=med-bot
+TYPE=bot
+MAIN=bot.py
+RAM=256
+AUTORESTART=true
+VERSION=latest
+APT=tools
+```
+
+Discloud auto-detects `requirements.txt` and runs `pip install` on first boot.
+
+### 3. Deploy — pick one method
+
+**Option A — Web upload (no CLI):**
+
+1. Zip the project folder (Windows: right-click → Send to → Compressed folder).
+2. **Important:** delete `.env` from the zip first — env vars are set in the dashboard.
+3. In the Discloud dashboard, click **+ Upload App** and drag the zip in.
+
+**Option B — CLI (faster for future updates):**
+
+```bash
+npm install -g discloud
+discloud login
+discloud commit
+```
+
+For future updates, just `git pull` then `discloud commit` again from the project directory.
+
+### 4. Set environment variables
+
+In your Discloud dashboard → click the app → **Variables** tab → add:
+
+- `DISCORD_TOKEN`
+- `GUILD_ID`
+- `CHANNEL_ID`
+- `TARGET_USER_ID`
+- `TIMEZONE` = `Europe/London`
+- `UPTIMEROBOT_HEARTBEAT_URL` (optional — see [Mitigations](#mitigations))
+
+### 5. Start
+
+Click **Start** in the dashboard. Watch the **Logs** tab for:
+
+```
+logged in as <your-bot-name> (id=...)
+synced 5 guild commands
+scheduler started; jobs=['reminder_11', 'reminder_15', ...]
+```
+
+Run `/status` in your Discord channel to confirm.
+
+---
+
 ## Deploy to HeavenCloud (free, 24/7)
 
 HeavenCloud is a free Pterodactyl-panel host designed for Discord bots. ~10-minute setup.
