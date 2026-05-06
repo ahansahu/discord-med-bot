@@ -37,74 +37,102 @@ The first run creates `med_bot.db` and procedurally generates the 6 sticker PNGs
 | `/month`  | Current month's full sticker chart with stats                |
 | `/chart`  | Alias for `/month`                                           |
 
-## Deploy to Discloud (free, 24/7)
+## Deploy to Oracle Cloud Always Free (free forever, 24/7)
 
-[Discloud](https://discloud.com) is a Discord-bot-specialized free host that's been running since ~2018. Free tier: **100 MB RAM**, 24/7 uptime, persistent storage. ~5-minute setup.
-
-> ⚠️ **RAM note:** 100 MB is tight for a discord.py + Pillow bot. Idle usage is ~70–90 MB, with chart rendering pushing toward the limit. If the bot ever OOMs during `/month`, see [RAM tuning](#ram-tuning-if-discloud-100-mb-is-too-tight) below for fixes.
+[Oracle Cloud Always Free](https://www.oracle.com/cloud/free/) gives you a permanent ARM VM (up to 4 cores, 24 GB RAM, 200 GB block storage). Real cloud infrastructure, no inactivity sleep, won't run out of free slots like the small Discord-bot hosts. The trade-off is ~5–10 minutes of one-time Linux setup, which the bundled `oracle-setup.sh` script automates.
 
 ### 1. Sign up
 
-- Go to https://discloud.com → **Login with Discord** (uses your existing Discord account)
-- Authorize the OAuth scopes
-- You're dropped into your dashboard
+- Go to https://www.oracle.com/cloud/free/ → **Start for free**
+- You'll need an email, phone number (SMS verification), and a credit card **for identity verification only** — Always Free resources never get charged. You can also enable a hard "no upgrade" cap so it can't bill you even by accident.
+- **Pick your Home Region carefully — it's permanent.** For Europe/London, choose **UK South (London)** (`uk-london-1`).
+- Verification typically takes 5–60 minutes; sometimes longer.
 
-### 2. The config file is already in this repo
+### 2. Create an Always Free ARM VM
 
-`discloud.config` at the project root tells Discloud how to run the bot:
+In the Oracle Cloud Console:
 
+1. **Menu** → **Compute** → **Instances** → **Create Instance**
+2. **Name:** `med-bot`
+3. **Image:** Canonical **Ubuntu 22.04** (or 24.04)
+4. **Shape:** click **Change shape** → **Ampere** → `VM.Standard.A1.Flex` → set to **1 OCPU + 6 GB memory**. The "Always Free Eligible" badge must be visible.
+5. **Networking:** accept defaults (creates a public-IP VCN).
+6. **SSH keys:** either paste your public key or download Oracle's generated keypair — keep the private key file safe.
+7. Hit **Create**. Provisioning takes ~1–2 minutes.
+
+Note the public IP from the instance page.
+
+### 3. SSH in
+
+From your local terminal (PowerShell on Windows works fine):
+
+```powershell
+ssh -i C:\path\to\ssh-key.key ubuntu@<your-public-ip>
 ```
-ID=med-bot
-TYPE=bot
-MAIN=bot.py
-RAM=100
-AUTORESTART=true
-VERSION=latest
-APT=tools
-```
 
-Discloud auto-detects `requirements.txt` and runs `pip install` on first boot.
+### 4. Run the setup script
 
-### 3. Deploy — pick one method
-
-**Option A — Web upload (no CLI):**
-
-1. Zip the project folder (Windows: right-click → Send to → Compressed folder).
-2. **Important:** delete `.env` from the zip first — env vars are set in the dashboard.
-3. In the Discloud dashboard, click **+ Upload App** and drag the zip in.
-
-**Option B — CLI (faster for future updates):**
+Once you're SSH'd in:
 
 ```bash
-npm install -g discloud
-discloud login
-discloud commit
+curl -O https://raw.githubusercontent.com/ahansahu/discord-med-bot/master/oracle-setup.sh
+chmod +x oracle-setup.sh
+./oracle-setup.sh
 ```
 
-For future updates, just `git pull` then `discloud commit` again from the project directory.
+The script:
+- Installs Python, git, build tools
+- Clones this repo to `~/discord-med-bot`
+- Creates a Python venv and installs requirements
+- Generates a `.env` from the template
+- Writes a `systemd` service unit and enables it on boot
 
-### 4. Set environment variables
+It takes ~3 minutes and is safe to re-run if anything goes wrong.
 
-In your Discloud dashboard → click the app → **Variables** tab → add:
+### 5. Fill in your env vars
 
-- `DISCORD_TOKEN`
-- `GUILD_ID`
-- `CHANNEL_ID`
-- `TARGET_USER_ID`
-- `TIMEZONE` = `Europe/London`
-- `UPTIMEROBOT_HEARTBEAT_URL` (optional — see [Mitigations](#mitigations))
+```bash
+nano ~/discord-med-bot/.env
+```
 
-### 5. Start
+Set `DISCORD_TOKEN`, `GUILD_ID`, `CHANNEL_ID`, `TARGET_USER_ID`. `TIMEZONE` is already pinned to `Europe/London`. Save with `Ctrl+O`, `Enter`, `Ctrl+X`.
 
-Click **Start** in the dashboard. Watch the **Logs** tab for:
+### 6. Start the bot
+
+```bash
+sudo systemctl start med-bot
+journalctl -u med-bot -f
+```
+
+You should see:
 
 ```
 logged in as <your-bot-name> (id=...)
 synced 5 guild commands
-scheduler started; jobs=['reminder_11', 'reminder_15', ...]
+scheduler started; jobs=['reminder_11', ...]
 ```
 
-Run `/status` in your Discord channel to confirm.
+Press `Ctrl+C` to stop tailing (the bot keeps running). Then run `/status` in your Discord channel to confirm — it should reply "no entry for today yet".
+
+The systemd service is configured with `Restart=on-failure`, so if the bot crashes it'll auto-restart within 10 seconds. It also auto-starts on VM reboot.
+
+### Updating the bot later
+
+When you push code changes to GitHub, just SSH in and run:
+
+```bash
+cd ~/discord-med-bot
+./update.sh
+```
+
+That pulls latest, refreshes Python deps, and restarts the service.
+
+### Operational notes
+
+- **Logs:** `journalctl -u med-bot -f` (live tail) or `journalctl -u med-bot -n 200` (last 200 lines)
+- **Stop / start / status:** `sudo systemctl stop|start|restart|status med-bot`
+- **OS updates:** `sudo apt update && sudo apt upgrade -y && sudo reboot` once a month or so. The bot auto-restarts after reboot.
+- **VM reclamation risk:** Oracle has occasionally reclaimed Always Free A1 instances during capacity crunches. `uk-london-1` is generally OK in 2025+. If it ever happens you'd get an email and the VM stops; you'd recreate it (15 min) and restore from your weekly DB backup DM.
 
 ---
 
@@ -141,65 +169,13 @@ Every **Monday at 10:00 London time**, the bot posts a weekly check-in summary i
 
 ---
 
-## RAM tuning (if Discloud 100 MB is too tight)
-
-If the bot crashes with out-of-memory errors (typically during `/month` chart rendering), try these in order:
-
-### 1. Lazy-load Pillow
-
-Pillow is currently imported at the top of `chart.py` and loads at startup. Move the imports inside the render functions so they only load when a chart is actually requested:
-
-```python
-# in chart.py — replace top-level Pillow imports with lazy ones
-def render_month(year, month):
-    from PIL import Image, ImageDraw, ImageFont
-    # ... rest of function
-```
-
-Saves ~10–20 MB of steady-state memory.
-
-### 2. Shrink the chart resolution
-
-Edit `chart.py`:
-
-```python
-# was: cell = 110
-cell = 80   # smaller cells = smaller image = less Pillow working memory
-```
-
-The image will be smaller in Discord but still readable.
-
-### 3. Free Pillow buffers explicitly
-
-After rendering, add `gc.collect()` and `del img, draw` to release memory back to the OS faster:
-
-```python
-out = io.BytesIO()
-img.save(out, "PNG")
-data = out.getvalue()
-del img, draw, out
-import gc; gc.collect()
-return data
-```
-
-### 4. Last resort — switch hosts
-
-If 100 MB really won't fit (it should), you've outgrown Discloud. Move to:
-- **Oracle Cloud Always Free** (24 GB RAM, permanent free)
-- **Sparked Host** free tier (1 GB RAM)
-- **Railway** ($3–5/mo)
-
-Your weekly DB backup makes the migration painless.
-
----
-
 ## Restoring from a backup
 
-If you have to redeploy (host died, switching providers, etc.):
+If you have to redeploy (VM reclaimed, switching providers, etc.):
 
-1. Set up the bot on the new host using the steps above, but **don't start it yet**.
-2. Drop your most recent `med_bot_backup_<date>.db` into the bot's working directory and rename it to `med_bot.db`.
-3. Start the bot. It'll pick up the existing data — `/month` should show all your old stickers.
+1. Provision a new VM and run `oracle-setup.sh` again — but **don't start the service yet**.
+2. Copy your most recent `med_bot_backup_<date>.db` (from your Discord DMs) onto the VM at `~/discord-med-bot/med_bot.db`. From your local machine: `scp -i <key> med_bot_backup_<date>.db ubuntu@<new-ip>:~/discord-med-bot/med_bot.db`
+3. Fill in `.env` and `sudo systemctl start med-bot`. The bot picks up where it left off — `/month` will show all your old stickers.
 
 ## Customizing the schedule
 
@@ -215,11 +191,12 @@ Change those constants and restart the bot. The scheduler uses `Europe/London` s
 ## Project layout
 
 ```
-bot.py            # discord client, events, slash commands
-scheduler.py      # APScheduler cron jobs + heartbeat / backup / weekly summary
-storage.py        # SQLite log + queries
-chart.py          # Pillow sticker chart + procedural sticker drawing
-config.py         # env loader
-discloud.config   # Discloud host config
-assets/stickers/  # generated on first run
+bot.py             # discord client, events, slash commands
+scheduler.py       # APScheduler cron jobs + heartbeat / backup / weekly summary
+storage.py         # SQLite log + queries
+chart.py           # Pillow sticker chart + procedural sticker drawing
+config.py          # env loader
+oracle-setup.sh    # one-shot Oracle Cloud VM setup
+update.sh          # pull + restart on the deployed VM
+assets/stickers/   # generated on first run
 ```
