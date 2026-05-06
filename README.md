@@ -39,7 +39,9 @@ The first run creates `med_bot.db` and procedurally generates the 6 sticker PNGs
 
 ## Deploy to Discloud (free, 24/7)
 
-[Discloud](https://discloud.com) is a Discord-bot-specialized free host that's been running since ~2018. Free tier: 256 MB RAM, 24/7 uptime, persistent storage. ~5-minute setup.
+[Discloud](https://discloud.com) is a Discord-bot-specialized free host that's been running since ~2018. Free tier: **100 MB RAM**, 24/7 uptime, persistent storage. ~5-minute setup.
+
+> ⚠️ **RAM note:** 100 MB is tight for a discord.py + Pillow bot. Idle usage is ~70–90 MB, with chart rendering pushing toward the limit. If the bot ever OOMs during `/month`, see [RAM tuning](#ram-tuning-if-discloud-100-mb-is-too-tight) below for fixes.
 
 ### 1. Sign up
 
@@ -55,7 +57,7 @@ The first run creates `med_bot.db` and procedurally generates the 6 sticker PNGs
 ID=med-bot
 TYPE=bot
 MAIN=bot.py
-RAM=256
+RAM=100
 AUTORESTART=true
 VERSION=latest
 APT=tools
@@ -186,6 +188,58 @@ Save these — if your host ever dies, drop the most recent backup next to `bot.
 ### C. Weekly "I'm alive" post (passive)
 
 Every **Monday at 10:00 London time**, the bot posts a weekly check-in summary in your reminder channel. If you ever notice you didn't get one on a Monday, that's a strong signal the bot is down — go check.
+
+---
+
+## RAM tuning (if Discloud 100 MB is too tight)
+
+If the bot crashes with out-of-memory errors (typically during `/month` chart rendering), try these in order:
+
+### 1. Lazy-load Pillow
+
+Pillow is currently imported at the top of `chart.py` and loads at startup. Move the imports inside the render functions so they only load when a chart is actually requested:
+
+```python
+# in chart.py — replace top-level Pillow imports with lazy ones
+def render_month(year, month):
+    from PIL import Image, ImageDraw, ImageFont
+    # ... rest of function
+```
+
+Saves ~10–20 MB of steady-state memory.
+
+### 2. Shrink the chart resolution
+
+Edit `chart.py`:
+
+```python
+# was: cell = 110
+cell = 80   # smaller cells = smaller image = less Pillow working memory
+```
+
+The image will be smaller in Discord but still readable.
+
+### 3. Free Pillow buffers explicitly
+
+After rendering, add `gc.collect()` and `del img, draw` to release memory back to the OS faster:
+
+```python
+out = io.BytesIO()
+img.save(out, "PNG")
+data = out.getvalue()
+del img, draw, out
+import gc; gc.collect()
+return data
+```
+
+### 4. Last resort — switch hosts
+
+If 100 MB really won't fit (it should), you've outgrown Discloud. Move to:
+- **Oracle Cloud Always Free** (24 GB RAM, permanent free)
+- **Sparked Host** free tier (1 GB RAM)
+- **Railway** ($3–5/mo)
+
+Your weekly DB backup makes the migration painless.
 
 ---
 
