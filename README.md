@@ -10,6 +10,7 @@ A small Discord bot that asks once a day whether you've taken your medication, n
 - Slash commands: `/taken`, `/status`, `/week`, `/month` (alias `/chart`).
 - Procedurally-drawn sticker chart (PNG) — random fun sticker (star, heart, smiley, sun, sparkle, flower) on every taken day.
 - Single-target tracking: only one configured user can confirm; everyone else is ignored politely.
+- **Built-in mitigations** for free-host flakiness — see [Mitigations](#mitigations).
 
 ## Quick start (local)
 
@@ -20,8 +21,8 @@ A small Discord bot that asks once a day whether you've taken your medication, n
    - `GUILD_ID` — your server's ID (right-click server → Copy Server ID; needs Developer Mode on).
    - `CHANNEL_ID` — the channel the bot will post reminders in.
    - `TARGET_USER_ID` — your Discord user ID (right-click yourself → Copy User ID).
-4. Make sure the bot has these intents enabled in the developer portal: **Message Content** + **Server Members** (presence not needed).
-5. Invite the bot to your server with the `bot` and `applications.commands` scopes and the `Send Messages`, `Read Message History`, `Add Reactions`, `Use Slash Commands` permissions.
+4. Make sure the bot has the **Message Content Intent** enabled in the developer portal.
+5. Invite the bot with the `bot` and `applications.commands` scopes and the `Send Messages`, `Read Message History`, `Add Reactions`, `Use Slash Commands`, `Attach Files` permissions.
 6. `python bot.py`
 
 The first run creates `med_bot.db` and procedurally generates the 6 sticker PNGs in `assets/stickers/`.
@@ -36,30 +37,96 @@ The first run creates `med_bot.db` and procedurally generates the 6 sticker PNGs
 | `/month`  | Current month's full sticker chart with stats                |
 | `/chart`  | Alias for `/month`                                           |
 
-## Hosting on a free Discord-bot host (24/7 always-on)
+## Deploy to HeavenCloud (free, 24/7)
 
-Hosts that work in 2026 (free, no inactivity sleep):
-- HeavenCloud — `https://heavencloud.in/service/free-discord-bot-hosting`
-- JustRunMy.App — `https://justrunmy.app/discord-bots`
-- FreeVPS.edu.pl — `https://freevps.edu.pl/free-vps-discord-bot-hosting.php`
+HeavenCloud is a free Pterodactyl-panel host designed for Discord bots. ~10-minute setup.
 
-Generic steps (the dashboards differ slightly):
+### 1. Sign up & create a server
 
-1. Push this repo to GitHub (private is fine).
-2. On the host, create a new **Python** bot project and link the repo.
-3. Set the start command to `python bot.py`.
-4. Set the env vars from your `.env` in the host's dashboard.
-5. Make sure the host gives you a **persistent disk** for `med_bot.db` and `assets/stickers/`. If not, point `DB_PATH` at a mounted volume, or fall back to a hosted SQLite (e.g. Turso free tier) — see the "Persistence fallback" section below.
-6. Start the project. Check the logs for `logged in as ...` and `scheduler started`.
+1. Go to https://heavencloud.in and create an account.
+2. From the dashboard, click **Create Server** (or similar) and pick the **Python** egg / template.
+3. Set:
+   - **Memory:** 512 MB is plenty (this bot uses ~80 MB)
+   - **Disk:** 1 GB is fine
+   - **Region:** EU (closest to your Europe/London users)
 
-> **Note on Render / Railway:** Render's free web services sleep after 15 min of inactivity (which kills the Discord websocket), and Railway no longer has a free tier — only a one-time $5 credit. They're not viable for free 24/7. Use one of the Discord-bot-specialized hosts above, or pay ~$5/mo on Railway for the easiest deploy.
+### 2. Pull your code from GitHub
 
-## Persistence fallback
+In the server's panel:
+1. Open the **File Manager** (or use SFTP — credentials are in the panel).
+2. Either:
+   - **Git method:** open the **Console** tab and run `git clone https://github.com/<you>/discord-med-bot.git .` (the trailing dot puts it in the current dir).
+   - **Upload method:** download the repo as a ZIP from GitHub and upload it via the file manager.
 
-If your host doesn't give a persistent disk:
-- Switch to a hosted SQLite — the simplest is [Turso](https://turso.tech) (libSQL, free tier).
-- Replace `storage._conn()` with a libSQL connection (`pip install libsql-experimental` or `libsql-client`) and update `DB_PATH` to a `libsql://` URL.
-- Everything else (schema, queries) works unchanged.
+### 3. Set environment variables
+
+In the panel, find **Startup** or **Variables** (the location varies — sometimes under **Settings**):
+- `DISCORD_TOKEN` — your bot token
+- `GUILD_ID` — your server ID
+- `CHANNEL_ID` — your reminder channel ID
+- `TARGET_USER_ID` — your Discord user ID
+- `TIMEZONE` — `Europe/London`
+- `UPTIMEROBOT_HEARTBEAT_URL` — leave blank for now (set up later in [Mitigations](#mitigations))
+
+### 4. Start command & dependencies
+
+- **Startup command:** `python bot.py`
+- **Dependencies install:** most Pterodactyl Python eggs auto-run `pip install -r requirements.txt` on (re)start. If yours doesn't, open the **Console** and run it manually once.
+
+### 5. Start the bot
+
+Hit **Start** in the panel. Watch the console for:
+
+```
+logged in as <your-bot-name> (id=...)
+synced 5 guild commands
+scheduler started; jobs=['reminder_11', 'reminder_15', ...]
+```
+
+Open Discord and run `/status` — you should get a "no entry for today yet" reply.
+
+---
+
+## Mitigations
+
+Free hosts can disappear, restart, or silently die. These three layers make sure you'll know if that happens and won't lose your data.
+
+### A. UptimeRobot heartbeat (recommended)
+
+Get an email alert if the bot goes more than ~1 hour without checking in.
+
+1. Sign up at https://uptimerobot.com (free for 50 monitors).
+2. Click **+ New monitor**.
+3. Type: **Heartbeat** (some plans call this "Cron Job Monitoring" or similar).
+4. Friendly name: `discord-med-bot`
+5. Heartbeat interval: **60 minutes** (gives a buffer over our 30-min ping)
+6. Save — UptimeRobot gives you a unique URL like `https://heartbeat.uptimerobot.com/abc123`.
+7. Add that URL to your bot's env vars as `UPTIMEROBOT_HEARTBEAT_URL`.
+8. Restart the bot.
+
+The bot now `GET`s that URL every 30 minutes. If UptimeRobot doesn't see a ping for 60 minutes, it emails you.
+
+### B. Weekly DB backups (automatic)
+
+Every **Sunday at 23:00 London time**, the bot DMs you `med_bot_backup_<date>.db`.
+
+Save these — if your host ever dies, drop the most recent backup next to `bot.py` as `med_bot.db` on a new host and your full history is back.
+
+> **Important:** for the DM to work, you must share a server with the bot (you do) and have **"Allow direct messages from server members"** enabled in your Discord privacy settings (User Settings → Privacy & Safety).
+
+### C. Weekly "I'm alive" post (passive)
+
+Every **Monday at 10:00 London time**, the bot posts a weekly check-in summary in your reminder channel. If you ever notice you didn't get one on a Monday, that's a strong signal the bot is down — go check.
+
+---
+
+## Restoring from a backup
+
+If you have to redeploy (host died, switching providers, etc.):
+
+1. Set up the bot on the new host using the steps above, but **don't start it yet**.
+2. Drop your most recent `med_bot_backup_<date>.db` into the bot's working directory and rename it to `med_bot.db`.
+3. Start the bot. It'll pick up the existing data — `/month` should show all your old stickers.
 
 ## Customizing the schedule
 
@@ -70,15 +137,17 @@ REMINDER_HOURS = (11, 15, 19, 23)
 MISSED_CUTOFF_HOUR = 2
 ```
 
-Change those constants and restart the bot. The scheduler uses `Europe/London` from `TIMEZONE` in `.env`, so DST is handled for you.
+Change those constants and restart the bot. The scheduler uses `Europe/London` so DST is handled for you.
 
 ## Project layout
 
 ```
 bot.py          # discord client, events, slash commands
-scheduler.py    # APScheduler cron jobs
+scheduler.py    # APScheduler cron jobs + heartbeat / backup / weekly summary
 storage.py      # SQLite log + queries
 chart.py        # Pillow sticker chart + procedural sticker drawing
 config.py       # env loader
 assets/stickers # generated on first run
+Procfile        # for Heroku-style hosts
+runtime.txt     # Python version hint
 ```
