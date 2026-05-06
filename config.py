@@ -26,6 +26,8 @@ TIMEZONE_NAME = os.getenv("TIMEZONE", "Europe/London")
 TZ = ZoneInfo(TIMEZONE_NAME)
 
 DB_PATH = Path(os.getenv("DB_PATH", "med_bot.db"))
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+USE_POSTGRES = bool(DATABASE_URL)
 ASSETS_DIR = Path(__file__).parent / "assets"
 STICKER_DIR = ASSETS_DIR / "stickers"
 

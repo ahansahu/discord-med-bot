@@ -54,18 +54,20 @@ The first run creates `med_bot.db` and procedurally generates the 6 sticker PNGs
 
 The first build takes ~1–2 min. **Don't worry that it errors on the first deploy** — it'll fail because env vars aren't set yet; that's expected.
 
-### 3. Add a persistent volume (critical — don't skip)
+### 3. Add a Postgres database (critical — don't skip)
 
-Without this, your SQLite log resets on every redeploy.
+Without persistence, your medication log resets every redeploy. Railway gives you a free managed Postgres database that the bot uses automatically.
 
-1. In your project → click the service → **Settings** tab → scroll to **Volumes**
-2. **+ New Volume**
-3. **Mount path:** `/app/data`
-4. **Size:** 1 GB
+1. On your project canvas, click **+ Create**
+2. Select **Database** → **PostgreSQL**
+3. Wait ~10 seconds for it to provision
+4. Railway automatically injects a `DATABASE_URL` env var into your bot service — you don't need to copy it
+
+That's it. The bot detects `DATABASE_URL` at startup and uses Postgres instead of SQLite.
 
 ### 4. Set environment variables
 
-In the project → service → **Variables** tab → add each:
+In the project → click the bot service → **Variables** tab → add each:
 
 | Variable | Value |
 |----------|-------|
@@ -74,10 +76,9 @@ In the project → service → **Variables** tab → add each:
 | `CHANNEL_ID` | your reminder channel ID |
 | `TARGET_USER_ID` | your Discord user ID |
 | `TIMEZONE` | `Europe/London` |
-| `DB_PATH` | `/app/data/med_bot.db` |
 | `UPTIMEROBOT_HEARTBEAT_URL` | (optional — see [Mitigations](#mitigations)) |
 
-`DB_PATH` is the most important one — it points the SQLite log at the persistent volume so it survives redeploys.
+`DATABASE_URL` is set automatically by Railway when you add Postgres — don't add it manually.
 
 ### 5. Redeploy
 
@@ -147,12 +148,31 @@ Every **Monday at 10:00 London time**, the bot posts a weekly check-in summary i
 
 ## Restoring from a backup
 
-If you ever need to restore your medication history (volume corruption, migrating off Railway, etc.):
+The bot DMs you a weekly backup of your log (see [Mitigations](#mitigations)). Format depends on the backend:
 
-1. Stop the bot (Railway: pause the service, or scale to 0 replicas).
-2. Get your most recent `med_bot_backup_<date>.db` from your Discord DMs.
-3. **On Railway:** open the service's **Volume** in the dashboard → there's no UI to upload, so the easiest path is to either (a) commit the backup `.db` into the repo at a path like `seed.db`, then add a tiny startup hook that copies it to `$DB_PATH` if missing on first boot, or (b) use Railway's CLI (`railway run`) to scp the file in. The DM-based backup primarily protects you when migrating to a new provider where this is much easier.
-4. **Migrating to another host (e.g. Oracle Cloud, Discloud):** drop the backup file at the host's `DB_PATH` location, then start the bot. `/month` will show all your old stickers.
+- **Postgres backend (Railway):** weekly DMs are JSON dumps (`med_bot_backup_<date>.json`). Restore by inserting each row back into `daily_log`. Railway also keeps automatic Postgres snapshots, so this is a belt-and-braces copy.
+- **SQLite backend (local / file-based hosts):** weekly DMs are the `.db` file directly. Drop it next to `bot.py` (or at `$DB_PATH`) and restart.
+
+### Restoring a JSON dump into Postgres
+
+On a fresh Railway Postgres, connect via the Railway CLI:
+
+```bash
+railway run psql $DATABASE_URL
+```
+
+Then for each row in the JSON, run:
+
+```sql
+INSERT INTO daily_log (date, status, taken_at, sticker_index, reminder_msg_id)
+VALUES ('2026-04-01', 'taken', '2026-04-01T11:23:00+01:00', 2, NULL);
+```
+
+(Or write a small Python script that reads the JSON and inserts via `psycopg`.)
+
+### Migrating between backends
+
+The schema is identical between SQLite and Postgres, so you can `pg_dump` from one and `pg_restore` to the other (or read SQLite via a script and bulk-insert). Both backends support the same set of statuses (`pending` / `taken` / `missed`) and column types.
 
 ## Customizing the schedule
 

@@ -1,9 +1,17 @@
-import sqlite3
+"""SQLite (local) / Postgres (Railway) storage layer.
+
+Selects the backend at import time based on DATABASE_URL. The two backends
+share an identical schema and an identical public API; query syntax is
+adapted via the BACKEND-aware query builders.
+"""
+import logging
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from typing import Iterable, Optional
 
-from config import DB_PATH, TZ
+from config import DB_PATH, DATABASE_URL, TZ, USE_POSTGRES
+
+log = logging.getLogger("med_bot.storage")
 
 
 SCHEMA = """
@@ -13,25 +21,76 @@ CREATE TABLE IF NOT EXISTS daily_log (
     taken_at        TEXT,
     sticker_index   INTEGER,
     reminder_msg_id TEXT
-);
+)
 """
 
 
-@contextmanager
-def _conn():
-    con = sqlite3.connect(DB_PATH)
-    con.row_factory = sqlite3.Row
-    try:
-        yield con
-        con.commit()
-    finally:
-        con.close()
+# --- backend setup --------------------------------------------------------
 
+if USE_POSTGRES:
+    import psycopg
+    from psycopg.rows import dict_row
+
+    PARAM = "%s"
+
+    @contextmanager
+    def _conn():
+        con = psycopg.connect(DATABASE_URL, row_factory=dict_row)
+        try:
+            yield con
+            con.commit()
+        finally:
+            con.close()
+
+    def _row_get(row, key):
+        return row[key] if row else None
+
+    INSERT_IGNORE_DAY = (
+        f"INSERT INTO daily_log (date, status) VALUES ({PARAM}, 'pending') "
+        "ON CONFLICT (date) DO NOTHING"
+    )
+    UPSERT_TAKEN = (
+        f"INSERT INTO daily_log (date, status, taken_at, sticker_index) "
+        f"VALUES ({PARAM}, 'taken', {PARAM}, {PARAM}) "
+        "ON CONFLICT (date) DO UPDATE SET "
+        "status = 'taken', taken_at = EXCLUDED.taken_at, sticker_index = EXCLUDED.sticker_index"
+    )
+else:
+    import sqlite3
+
+    PARAM = "?"
+
+    @contextmanager
+    def _conn():
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        con = sqlite3.connect(DB_PATH)
+        con.row_factory = sqlite3.Row
+        try:
+            yield con
+            con.commit()
+        finally:
+            con.close()
+
+    def _row_get(row, key):
+        return row[key] if row is not None else None
+
+    INSERT_IGNORE_DAY = (
+        f"INSERT OR IGNORE INTO daily_log (date, status) VALUES ({PARAM}, 'pending')"
+    )
+    UPSERT_TAKEN = (
+        f"INSERT INTO daily_log (date, status, taken_at, sticker_index) "
+        f"VALUES ({PARAM}, 'taken', {PARAM}, {PARAM}) "
+        "ON CONFLICT(date) DO UPDATE SET "
+        "status = 'taken', taken_at = excluded.taken_at, sticker_index = excluded.sticker_index"
+    )
+
+
+# --- public API -----------------------------------------------------------
 
 def init_db() -> None:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    log.info("storage backend: %s", "postgres" if USE_POSTGRES else "sqlite")
     with _conn() as c:
-        c.executescript(SCHEMA)
+        c.execute(SCHEMA)
 
 
 def today_str() -> str:
@@ -40,61 +99,52 @@ def today_str() -> str:
 
 def ensure_day(d: str) -> None:
     with _conn() as c:
-        c.execute(
-            "INSERT OR IGNORE INTO daily_log (date, status) VALUES (?, 'pending')",
-            (d,),
-        )
+        c.execute(INSERT_IGNORE_DAY, (d,))
 
 
 def set_reminder_msg(d: str, msg_id: int) -> None:
     with _conn() as c:
         c.execute(
-            "UPDATE daily_log SET reminder_msg_id = ? WHERE date = ?",
+            f"UPDATE daily_log SET reminder_msg_id = {PARAM} WHERE date = {PARAM}",
             (str(msg_id), d),
         )
 
 
-def get_status(d: str) -> Optional[sqlite3.Row]:
+def get_status(d: str):
     with _conn() as c:
-        cur = c.execute("SELECT * FROM daily_log WHERE date = ?", (d,))
+        cur = c.execute(
+            f"SELECT * FROM daily_log WHERE date = {PARAM}", (d,)
+        )
         return cur.fetchone()
 
 
 def get_reminder_msg_id(d: str) -> Optional[int]:
     row = get_status(d)
-    if row and row["reminder_msg_id"]:
-        return int(row["reminder_msg_id"])
-    return None
+    if row is None:
+        return None
+    val = _row_get(row, "reminder_msg_id")
+    return int(val) if val else None
 
 
 def mark_taken(d: str, sticker_index: int) -> bool:
     """Returns True if newly marked, False if already taken."""
     with _conn() as c:
-        cur = c.execute("SELECT status FROM daily_log WHERE date = ?", (d,))
+        cur = c.execute(
+            f"SELECT status FROM daily_log WHERE date = {PARAM}", (d,)
+        )
         row = cur.fetchone()
-        if row and row["status"] == "taken":
+        if row and _row_get(row, "status") == "taken":
             return False
         now_iso = datetime.now(TZ).isoformat(timespec="seconds")
-        if row is None:
-            c.execute(
-                "INSERT INTO daily_log (date, status, taken_at, sticker_index) "
-                "VALUES (?, 'taken', ?, ?)",
-                (d, now_iso, sticker_index),
-            )
-        else:
-            c.execute(
-                "UPDATE daily_log SET status = 'taken', taken_at = ?, sticker_index = ? "
-                "WHERE date = ?",
-                (now_iso, sticker_index, d),
-            )
+        c.execute(UPSERT_TAKEN, (d, now_iso, sticker_index))
         return True
 
 
 def mark_missed_if_pending(d: str) -> bool:
     with _conn() as c:
         cur = c.execute(
-            "UPDATE daily_log SET status = 'missed' "
-            "WHERE date = ? AND status = 'pending'",
+            f"UPDATE daily_log SET status = 'missed' "
+            f"WHERE date = {PARAM} AND status = 'pending'",
             (d,),
         )
         return cur.rowcount > 0
@@ -102,20 +152,21 @@ def mark_missed_if_pending(d: str) -> bool:
 
 def is_pending(d: str) -> bool:
     row = get_status(d)
-    return row is not None and row["status"] == "pending"
+    return row is not None and _row_get(row, "status") == "pending"
 
 
-def range_logs(start: date, end: date) -> list[sqlite3.Row]:
+def range_logs(start: date, end: date) -> list:
     with _conn() as c:
         cur = c.execute(
-            "SELECT * FROM daily_log WHERE date >= ? AND date <= ? ORDER BY date",
+            f"SELECT * FROM daily_log WHERE date >= {PARAM} AND date <= {PARAM} "
+            "ORDER BY date",
             (start.isoformat(), end.isoformat()),
         )
         return list(cur.fetchall())
 
 
-def status_map(start: date, end: date) -> dict[str, sqlite3.Row]:
-    return {row["date"]: row for row in range_logs(start, end)}
+def status_map(start: date, end: date) -> dict:
+    return {_row_get(r, "date"): r for r in range_logs(start, end)}
 
 
 def current_streak() -> int:
@@ -124,11 +175,11 @@ def current_streak() -> int:
     streak = 0
     cursor = today
     today_row = get_status(today.isoformat())
-    if today_row is None or today_row["status"] != "taken":
+    if today_row is None or _row_get(today_row, "status") != "taken":
         cursor = today - timedelta(days=1)
     while True:
         row = get_status(cursor.isoformat())
-        if row and row["status"] == "taken":
+        if row and _row_get(row, "status") == "taken":
             streak += 1
             cursor -= timedelta(days=1)
         else:
@@ -136,9 +187,19 @@ def current_streak() -> int:
     return streak
 
 
-def counts(start: date, end: date) -> dict[str, int]:
+def counts(start: date, end: date) -> dict:
     rows = range_logs(start, end)
     out = {"taken": 0, "missed": 0, "pending": 0}
     for r in rows:
-        out[r["status"]] = out.get(r["status"], 0) + 1
+        s = _row_get(r, "status")
+        out[s] = out.get(s, 0) + 1
     return out
+
+
+def dump_all_rows() -> list[dict]:
+    """Return every daily_log row as a plain list of dicts. Used for backup DMs."""
+    with _conn() as c:
+        cur = c.execute("SELECT * FROM daily_log ORDER BY date")
+        rows = cur.fetchall()
+    fields = ("date", "status", "taken_at", "sticker_index", "reminder_msg_id")
+    return [{f: _row_get(r, f) for f in fields} for r in rows]

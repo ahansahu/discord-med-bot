@@ -17,11 +17,13 @@ from config import (
     TARGET_USER_ID,
     TZ,
     UPTIMEROBOT_HEARTBEAT_URL,
+    USE_POSTGRES,
     WEEKLY_BACKUP_DOW,
     WEEKLY_BACKUP_HOUR,
     WEEKLY_SUMMARY_DOW,
     WEEKLY_SUMMARY_HOUR,
 )
+import json
 import chart
 import storage
 
@@ -104,23 +106,41 @@ async def _weekly_summary(bot: discord.Client) -> None:
 
 
 async def _weekly_backup(bot: discord.Client) -> None:
-    """DM the configured user a copy of the SQLite DB."""
+    """DM the configured user a copy of their medication log.
+
+    On SQLite: attaches the .db file directly.
+    On Postgres: dumps every row as JSON (Railway already runs scheduled
+    Postgres backups, so this is a portable belt-and-braces copy you can
+    restore onto any backend).
+    """
     try:
-        if not DB_PATH.exists():
-            log.info("no DB file yet, skipping backup")
-            return
         user = bot.get_user(TARGET_USER_ID) or await bot.fetch_user(TARGET_USER_ID)
         if user is None:
             log.warning("could not resolve TARGET_USER_ID for backup")
             return
         today = date_cls.today().isoformat()
-        f = discord.File(str(DB_PATH), filename=f"med_bot_backup_{today}.db")
-        await user.send(
-            content="📦 weekly backup of your medication log. Save this file — "
-                    "drop it in next to `bot.py` as `med_bot.db` if you ever "
-                    "need to restore.",
-            file=f,
-        )
+
+        if USE_POSTGRES:
+            rows = storage.dump_all_rows()
+            payload = json.dumps(rows, indent=2, default=str).encode("utf-8")
+            f = discord.File(io.BytesIO(payload),
+                             filename=f"med_bot_backup_{today}.json")
+            content = (
+                "📦 weekly backup of your medication log (JSON dump from Postgres). "
+                "Save this — you can restore onto any backend by importing the rows."
+            )
+        else:
+            if not DB_PATH.exists():
+                log.info("no DB file yet, skipping backup")
+                return
+            f = discord.File(str(DB_PATH),
+                             filename=f"med_bot_backup_{today}.db")
+            content = (
+                "📦 weekly backup of your medication log. Save this file — "
+                "drop it next to `bot.py` as `med_bot.db` if you ever need to restore."
+            )
+
+        await user.send(content=content, file=f)
     except discord.Forbidden:
         log.warning("backup DM forbidden — user must share a server with the bot "
                     "and have DMs from server members enabled")
