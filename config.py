@@ -1,0 +1,36 @@
+import os
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+
+def _required(name: str) -> str:
+    value = os.getenv(name)
+    if not value:
+        raise RuntimeError(f"Missing required env var: {name}")
+    return value
+
+
+def _int(name: str) -> int:
+    return int(_required(name))
+
+
+DISCORD_TOKEN = _required("DISCORD_TOKEN")
+GUILD_ID = _int("GUILD_ID")
+CHANNEL_ID = _int("CHANNEL_ID")
+TARGET_USER_ID = _int("TARGET_USER_ID")
+TIMEZONE_NAME = os.getenv("TIMEZONE", "Europe/London")
+TZ = ZoneInfo(TIMEZONE_NAME)
+
+DB_PATH = Path(os.getenv("DB_PATH", "med_bot.db"))
+ASSETS_DIR = Path(__file__).parent / "assets"
+STICKER_DIR = ASSETS_DIR / "stickers"
+
+REMINDER_HOURS = (11, 15, 19, 23)
+MISSED_CUTOFF_HOUR = 2
+
+CONFIRM_REACTIONS = {"✅", "☑️", "\U0001f44d"}
+CONFIRM_WORDS = ("yes", "y", "taken", "done", "yep", "yeah")
