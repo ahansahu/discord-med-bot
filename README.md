@@ -108,56 +108,6 @@ Run `/status` in your Discord channel to confirm.
 
 ---
 
-## Deploy to HeavenCloud (free, 24/7)
-
-HeavenCloud is a free Pterodactyl-panel host designed for Discord bots. ~10-minute setup.
-
-### 1. Sign up & create a server
-
-1. Go to https://heavencloud.in and create an account.
-2. From the dashboard, click **Create Server** (or similar) and pick the **Python** egg / template.
-3. Set:
-   - **Memory:** 512 MB is plenty (this bot uses ~80 MB)
-   - **Disk:** 1 GB is fine
-   - **Region:** EU (closest to your Europe/London users)
-
-### 2. Pull your code from GitHub
-
-In the server's panel:
-1. Open the **File Manager** (or use SFTP — credentials are in the panel).
-2. Either:
-   - **Git method:** open the **Console** tab and run `git clone https://github.com/<you>/discord-med-bot.git .` (the trailing dot puts it in the current dir).
-   - **Upload method:** download the repo as a ZIP from GitHub and upload it via the file manager.
-
-### 3. Set environment variables
-
-In the panel, find **Startup** or **Variables** (the location varies — sometimes under **Settings**):
-- `DISCORD_TOKEN` — your bot token
-- `GUILD_ID` — your server ID
-- `CHANNEL_ID` — your reminder channel ID
-- `TARGET_USER_ID` — your Discord user ID
-- `TIMEZONE` — `Europe/London`
-- `UPTIMEROBOT_HEARTBEAT_URL` — leave blank for now (set up later in [Mitigations](#mitigations))
-
-### 4. Start command & dependencies
-
-- **Startup command:** `python bot.py`
-- **Dependencies install:** most Pterodactyl Python eggs auto-run `pip install -r requirements.txt` on (re)start. If yours doesn't, open the **Console** and run it manually once.
-
-### 5. Start the bot
-
-Hit **Start** in the panel. Watch the console for:
-
-```
-logged in as <your-bot-name> (id=...)
-synced 5 guild commands
-scheduler started; jobs=['reminder_11', 'reminder_15', ...]
-```
-
-Open Discord and run `/status` — you should get a "no entry for today yet" reply.
-
----
-
 ## Mitigations
 
 Free hosts can disappear, restart, or silently die. These three layers make sure you'll know if that happens and won't lose your data.
@@ -265,12 +215,11 @@ Change those constants and restart the bot. The scheduler uses `Europe/London` s
 ## Project layout
 
 ```
-bot.py          # discord client, events, slash commands
-scheduler.py    # APScheduler cron jobs + heartbeat / backup / weekly summary
-storage.py      # SQLite log + queries
-chart.py        # Pillow sticker chart + procedural sticker drawing
-config.py       # env loader
-assets/stickers # generated on first run
-Procfile        # for Heroku-style hosts
-runtime.txt     # Python version hint
+bot.py            # discord client, events, slash commands
+scheduler.py      # APScheduler cron jobs + heartbeat / backup / weekly summary
+storage.py        # SQLite log + queries
+chart.py          # Pillow sticker chart + procedural sticker drawing
+config.py         # env loader
+discloud.config   # Discloud host config
+assets/stickers/  # generated on first run
 ```
