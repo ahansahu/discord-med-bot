@@ -1,7 +1,8 @@
 import io
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
+import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -36,6 +37,35 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 def _is_target(user_id: int) -> bool:
     return user_id == TARGET_USER_ID
+
+
+IMPORT_TTL_SECONDS = 300
+_import_prompts: dict[int, datetime] = {}
+
+
+def _register_import_prompt(message_id: int) -> None:
+    expiry = datetime.now(timezone.utc) + timedelta(seconds=IMPORT_TTL_SECONDS)
+    _import_prompts[message_id] = expiry
+    now = datetime.now(timezone.utc)
+    for mid in [m for m, exp in _import_prompts.items() if exp < now]:
+        _import_prompts.pop(mid, None)
+
+
+def _is_active_import_prompt(message_id: int) -> bool:
+    exp = _import_prompts.get(message_id)
+    if exp is None:
+        return False
+    if exp < datetime.now(timezone.utc):
+        _import_prompts.pop(message_id, None)
+        return False
+    return True
+
+
+async def _fetch_bytes(url: str) -> bytes:
+    async with aiohttp.ClientSession() as s:
+        async with s.get(url) as r:
+            r.raise_for_status()
+            return await r.read()
 
 
 async def _confirm(channel: discord.abc.Messageable, *, already: bool = False) -> None:
@@ -87,6 +117,10 @@ async def on_message(message: discord.Message) -> None:
     if not _is_target(message.author.id):
         await bot.process_commands(message)
         return
+    if message.stickers and message.reference and \
+            _is_active_import_prompt(message.reference.message_id):
+        await _import_stickers(message)
+        return
     text = message.content.strip().lower()
     if any(text == w or text.startswith(w + " ") or text.startswith(w + "!") for w in CONFIRM_WORDS):
         await _do_mark_taken(message.channel)
@@ -98,6 +132,10 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent) -> None:
     if payload.channel_id != CHANNEL_ID:
         return
     if not _is_target(payload.user_id):
+        return
+    if _is_active_import_prompt(payload.message_id):
+        channel = bot.get_channel(payload.channel_id) or await bot.fetch_channel(payload.channel_id)
+        await _import_emoji_reaction(channel, payload)
         return
     if str(payload.emoji) not in CONFIRM_REACTIONS:
         return
@@ -251,6 +289,67 @@ async def cmd_removesticker(interaction: discord.Interaction, name: str) -> None
             f"couldn't remove `{name}` — must be an existing `custom_*.png` file.",
             ephemeral=True,
         )
+
+
+async def _import_emoji_reaction(
+    channel: discord.abc.Messageable, payload: discord.RawReactionActionEvent
+) -> None:
+    emoji = payload.emoji
+    if not emoji.is_custom_emoji():
+        await channel.send("unicode emojis aren't supported — use a custom server emoji.")
+        return
+    try:
+        data = await _fetch_bytes(str(emoji.url))
+        path = chart.save_custom_sticker(data)
+    except (aiohttp.ClientError, ValueError) as e:
+        await channel.send(f"❌ couldn't import `:{emoji.name}:` — {e}")
+        return
+    pool_size = len(chart._sticker_pool())
+    await channel.send(
+        f"✅ saved `{path.name}` from emoji `:{emoji.name}:` (pool now {pool_size})."
+    )
+
+
+async def _import_stickers(message: discord.Message) -> None:
+    saved: list[str] = []
+    skipped: list[str] = []
+    for sticker in message.stickers:
+        fmt = sticker.format
+        if fmt == discord.StickerFormatType.lottie:
+            skipped.append(f"`{sticker.name}` (lottie unsupported)")
+            continue
+        try:
+            data = await _fetch_bytes(str(sticker.url))
+            path = chart.save_custom_sticker(data)
+        except (aiohttp.ClientError, ValueError) as e:
+            skipped.append(f"`{sticker.name}` ({e})")
+            continue
+        saved.append(path.name)
+    parts = []
+    if saved:
+        pool_size = len(chart._sticker_pool())
+        parts.append(f"✅ saved {len(saved)} as " + ", ".join(f"`{n}`" for n in saved) +
+                     f" (pool now {pool_size}).")
+    if skipped:
+        parts.append("skipped: " + ", ".join(skipped))
+    await message.channel.send("\n".join(parts) or "nothing imported.")
+
+
+@bot.tree.command(
+    name="importsticker",
+    description="Import a Discord emoji (react) or sticker (reply) as a custom sticker.",
+)
+async def cmd_importsticker(interaction: discord.Interaction) -> None:
+    if not _is_target(interaction.user.id):
+        await interaction.response.send_message(
+            "this bot only tracks one user 🙏", ephemeral=True)
+        return
+    await interaction.response.send_message(
+        "react to this message with a custom emoji to import it, "
+        "or reply to it with a sticker. (within 5 minutes)"
+    )
+    msg = await interaction.original_response()
+    _register_import_prompt(msg.id)
 
 
 def main() -> None:
