@@ -193,6 +193,66 @@ async def cmd_chart(interaction: discord.Interaction) -> None:
     await _send_month(interaction)
 
 
+@bot.tree.command(name="addsticker", description="Upload a custom sticker image.")
+@app_commands.describe(image="Image file (any format) — auto-resized to 96x96.")
+async def cmd_addsticker(
+    interaction: discord.Interaction, image: discord.Attachment
+) -> None:
+    if not _is_target(interaction.user.id):
+        await interaction.response.send_message(
+            "this bot only tracks one user 🙏", ephemeral=True)
+        return
+    ctype = image.content_type or ""
+    if not ctype.startswith("image/"):
+        await interaction.response.send_message(
+            f"that doesn't look like an image (content-type: `{ctype or 'unknown'}`).",
+            ephemeral=True,
+        )
+        return
+    await interaction.response.defer(thinking=True)
+    try:
+        data = await image.read()
+        path = chart.save_custom_sticker(data)
+    except ValueError as e:
+        await interaction.followup.send(f"❌ {e}", ephemeral=True)
+        return
+    pool_size = len(chart._sticker_pool())
+    await interaction.followup.send(
+        f"✅ saved as `{path.name}`. sticker pool now has **{pool_size}** designs."
+    )
+
+
+@bot.tree.command(name="liststickers", description="List built-in and custom stickers.")
+async def cmd_liststickers(interaction: discord.Interaction) -> None:
+    customs = chart.list_custom_stickers()
+    lines = [f"**built-in:** sticker_0..{chart.STICKER_COUNT - 1} ({chart.STICKER_COUNT})"]
+    if customs:
+        lines.append(f"**custom ({len(customs)}):**")
+        lines.extend(f"• `{p.name}`" for p in customs)
+    else:
+        lines.append("**custom:** none yet — use `/addsticker` to add one.")
+    await interaction.response.send_message("\n".join(lines), ephemeral=True)
+
+
+@bot.tree.command(name="removesticker", description="Delete a custom sticker by filename.")
+@app_commands.describe(name="Filename, e.g. custom_001.png")
+async def cmd_removesticker(interaction: discord.Interaction, name: str) -> None:
+    if not _is_target(interaction.user.id):
+        await interaction.response.send_message(
+            "this bot only tracks one user 🙏", ephemeral=True)
+        return
+    if chart.remove_custom_sticker(name):
+        await interaction.response.send_message(
+            f"🗑️ removed `{name}`. existing chart entries referencing it will "
+            f"wrap around the remaining pool."
+        )
+    else:
+        await interaction.response.send_message(
+            f"couldn't remove `{name}` — must be an existing `custom_*.png` file.",
+            ephemeral=True,
+        )
+
+
 def main() -> None:
     storage.init_db()
     bot.run(DISCORD_TOKEN)

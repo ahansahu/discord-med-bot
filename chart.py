@@ -14,6 +14,7 @@ import storage
 
 STICKER_SIZE = 96
 STICKER_COUNT = 6
+CUSTOM_PREFIX = "custom_"
 
 
 # ---------- font loading ----------
@@ -159,17 +160,73 @@ def _ensure_stickers() -> list[Path]:
     return paths
 
 
+def _sticker_pool() -> list[Path]:
+    builtin = _ensure_stickers()
+    customs = sorted(
+        p for p in STICKER_DIR.glob(f"{CUSTOM_PREFIX}*.png") if p.is_file()
+    )
+    return builtin + customs
+
+
 def random_sticker_index() -> int:
-    _ensure_stickers()
-    return random.randrange(STICKER_COUNT)
+    return random.randrange(len(_sticker_pool()))
 
 
 def _load_sticker(index: int, size: int) -> Image.Image:
-    paths = _ensure_stickers()
+    paths = _sticker_pool()
     img = Image.open(paths[index % len(paths)]).convert("RGBA")
     if img.size != (size, size):
         img = img.resize((size, size), Image.LANCZOS)
     return img
+
+
+def _next_custom_path() -> Path:
+    existing = {p.name for p in STICKER_DIR.glob(f"{CUSTOM_PREFIX}*.png")}
+    n = 1
+    while True:
+        name = f"{CUSTOM_PREFIX}{n:03d}.png"
+        if name not in existing:
+            return STICKER_DIR / name
+        n += 1
+
+
+def save_custom_sticker(data: bytes) -> Path:
+    """Decode arbitrary image bytes, center-crop to square, resize to STICKER_SIZE,
+    and save as a new custom_NNN.png. Returns the saved path."""
+    STICKER_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        src = Image.open(io.BytesIO(data))
+        src.load()
+    except Exception as e:
+        raise ValueError(f"could not read image: {e}") from e
+    img = src.convert("RGBA")
+    w, h = img.size
+    side = min(w, h)
+    left = (w - side) // 2
+    top = (h - side) // 2
+    img = img.crop((left, top, left + side, top + side))
+    img = img.resize((STICKER_SIZE, STICKER_SIZE), Image.LANCZOS)
+    out_path = _next_custom_path()
+    img.save(out_path, "PNG")
+    return out_path
+
+
+def list_custom_stickers() -> list[Path]:
+    return sorted(p for p in STICKER_DIR.glob(f"{CUSTOM_PREFIX}*.png") if p.is_file())
+
+
+def remove_custom_sticker(name: str) -> bool:
+    """Delete a custom sticker by filename. Returns True if deleted.
+    Refuses to delete built-in sticker_*.png files."""
+    if not name.startswith(CUSTOM_PREFIX) or not name.endswith(".png"):
+        return False
+    if "/" in name or "\\" in name or ".." in name:
+        return False
+    p = STICKER_DIR / name
+    if not p.is_file():
+        return False
+    p.unlink()
+    return True
 
 
 # ---------- chart rendering ----------
