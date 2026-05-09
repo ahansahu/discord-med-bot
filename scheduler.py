@@ -32,11 +32,11 @@ log = logging.getLogger("med_bot.scheduler")
 
 REMINDER_TEXT = (
     "<@{user_id}> 💊 time for your medication! "
-    "React with ✅ or reply `yes` once you've taken it."
+    "React with ✅ or use `/taken` once you've taken it."
 )
 NUDGE_TEXT = (
     "<@{user_id}> 🔔 just a nudge — still need to log your medication for today. "
-    "React with ✅ or reply `yes` when done."
+    "React with ✅ or use `/taken` when done."
 )
 MISSED_NOTICE = (
     "📋 today's medication wasn't logged before the cutoff. Marked as missed."
