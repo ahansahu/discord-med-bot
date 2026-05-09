@@ -13,6 +13,7 @@ from config import (
     CONFIRM_WORDS,
     DISCORD_TOKEN,
     GUILD_ID,
+    STICKER_DIR,
     TARGET_USER_ID,
     TZ,
 )
@@ -336,6 +337,32 @@ async def cmd_liststickers(interaction: discord.Interaction) -> None:
     else:
         lines.append("**custom:** none yet — use `/addsticker` to add one.")
     await interaction.response.send_message("\n".join(lines), ephemeral=True)
+
+
+@bot.tree.command(name="getsticker", description="Send a sticker image as a file.")
+@app_commands.describe(name="Filename e.g. custom_001.png — omit for the most recent custom sticker.")
+async def cmd_getsticker(interaction: discord.Interaction, name: str | None = None) -> None:
+    if name is None:
+        customs = chart.list_custom_stickers()
+        if not customs:
+            await interaction.response.send_message(
+                "no custom stickers yet — use `/addsticker` to upload one.",
+                ephemeral=True,
+            )
+            return
+        path = customs[-1]
+    else:
+        if "/" in name or "\\" in name or ".." in name:
+            await interaction.response.send_message("invalid filename.", ephemeral=True)
+            return
+        path = STICKER_DIR / name
+        if not path.is_file():
+            await interaction.response.send_message(
+                f"`{name}` not found — use `/liststickers` to see available names.",
+                ephemeral=True,
+            )
+            return
+    await interaction.response.send_message(file=discord.File(path, filename=path.name))
 
 
 @bot.tree.command(name="removesticker", description="Delete a custom sticker by filename.")
