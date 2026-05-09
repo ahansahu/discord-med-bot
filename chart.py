@@ -1,5 +1,6 @@
 import calendar
 import io
+import logging
 import math
 import random
 from datetime import date, datetime, timedelta
@@ -11,6 +12,8 @@ from PIL import Image, ImageDraw, ImageFont
 from config import STICKER_DIR, TZ
 import storage
 
+
+log = logging.getLogger("med_bot.chart")
 
 STICKER_SIZE = 96
 STICKER_COUNT = 6
@@ -173,8 +176,12 @@ def random_sticker_index() -> int:
 
 
 def _load_sticker(index: int, size: int) -> Image.Image:
+    # Stable fallback to built-in sticker_0 when the original index points past
+    # the current pool — keeps historical chart cells from re-shuffling when a
+    # custom sticker is removed.
     paths = _sticker_pool()
-    img = Image.open(paths[index % len(paths)]).convert("RGBA")
+    path = paths[index] if 0 <= index < len(paths) else paths[0]
+    img = Image.open(path).convert("RGBA")
     if img.size != (size, size):
         img = img.resize((size, size), Image.LANCZOS)
     return img
@@ -192,7 +199,8 @@ def _next_custom_path() -> Path:
 
 def save_custom_sticker(data: bytes) -> Path:
     """Decode arbitrary image bytes, center-crop to square, resize to STICKER_SIZE,
-    and save as a new custom_NNN.png. Returns the saved path."""
+    and save as a new custom_NNN.png. Persists the bytes to the database as
+    well so the file survives Railway redeploys. Returns the saved path."""
     STICKER_DIR.mkdir(parents=True, exist_ok=True)
     try:
         src = Image.open(io.BytesIO(data))
@@ -206,8 +214,12 @@ def save_custom_sticker(data: bytes) -> Path:
     top = (h - side) // 2
     img = img.crop((left, top, left + side, top + side))
     img = img.resize((STICKER_SIZE, STICKER_SIZE), Image.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    blob = buf.getvalue()
     out_path = _next_custom_path()
-    img.save(out_path, "PNG")
+    out_path.write_bytes(blob)
+    storage.save_sticker_blob(out_path.name, blob)
     return out_path
 
 
@@ -223,10 +235,42 @@ def remove_custom_sticker(name: str) -> bool:
     if "/" in name or "\\" in name or ".." in name:
         return False
     p = STICKER_DIR / name
-    if not p.is_file():
-        return False
-    p.unlink()
-    return True
+    file_existed = p.is_file()
+    if file_existed:
+        p.unlink()
+    db_existed = storage.delete_sticker_blob(name)
+    return file_existed or db_existed
+
+
+def hydrate_custom_stickers() -> None:
+    """Sync the on-disk sticker cache with the database.
+
+    Restores any DB-stored stickers missing from disk (the case after a
+    Railway redeploy wipes the container filesystem), and backfills any
+    orphan disk files into the DB (covers SQLite users upgrading, or files
+    written before the DB write succeeded). Safe to call once at boot."""
+    STICKER_DIR.mkdir(parents=True, exist_ok=True)
+    blobs = storage.list_sticker_blobs()
+    db_names = {name for name, _ in blobs}
+
+    restored = 0
+    for name, data in blobs:
+        path = STICKER_DIR / name
+        if not path.exists() or path.stat().st_size != len(data):
+            path.write_bytes(data)
+            restored += 1
+
+    backfilled = 0
+    for path in STICKER_DIR.glob(f"{CUSTOM_PREFIX}*.png"):
+        if path.is_file() and path.name not in db_names:
+            storage.save_sticker_blob(path.name, path.read_bytes())
+            backfilled += 1
+
+    if restored or backfilled:
+        log.info(
+            "custom stickers: restored %d from db, backfilled %d to db",
+            restored, backfilled,
+        )
 
 
 # ---------- chart rendering ----------

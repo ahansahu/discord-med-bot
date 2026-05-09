@@ -55,6 +55,17 @@ if USE_POSTGRES:
         "ON CONFLICT (date) DO UPDATE SET "
         "status = 'taken', taken_at = EXCLUDED.taken_at, sticker_index = EXCLUDED.sticker_index"
     )
+    CUSTOM_STICKERS_SCHEMA = """
+    CREATE TABLE IF NOT EXISTS custom_stickers (
+        filename    TEXT PRIMARY KEY,
+        image       BYTEA NOT NULL,
+        created_at  TIMESTAMPTZ DEFAULT NOW()
+    )
+    """
+    UPSERT_STICKER = (
+        f"INSERT INTO custom_stickers (filename, image) VALUES ({PARAM}, {PARAM}) "
+        "ON CONFLICT (filename) DO UPDATE SET image = EXCLUDED.image"
+    )
 else:
     import sqlite3
 
@@ -83,6 +94,17 @@ else:
         "ON CONFLICT(date) DO UPDATE SET "
         "status = 'taken', taken_at = excluded.taken_at, sticker_index = excluded.sticker_index"
     )
+    CUSTOM_STICKERS_SCHEMA = """
+    CREATE TABLE IF NOT EXISTS custom_stickers (
+        filename    TEXT PRIMARY KEY,
+        image       BLOB NOT NULL,
+        created_at  TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+    """
+    UPSERT_STICKER = (
+        f"INSERT INTO custom_stickers (filename, image) VALUES ({PARAM}, {PARAM}) "
+        "ON CONFLICT(filename) DO UPDATE SET image = excluded.image"
+    )
 
 
 # --- public API -----------------------------------------------------------
@@ -91,6 +113,7 @@ def init_db() -> None:
     log.info("storage backend: %s", "postgres" if USE_POSTGRES else "sqlite")
     with _conn() as c:
         c.execute(SCHEMA)
+        c.execute(CUSTOM_STICKERS_SCHEMA)
 
 
 def today_str() -> str:
@@ -218,3 +241,27 @@ def dump_all_rows() -> list[dict]:
         rows = cur.fetchall()
     fields = ("date", "status", "taken_at", "sticker_index", "reminder_msg_id")
     return [{f: _row_get(r, f) for f in fields} for r in rows]
+
+
+# --- custom sticker blob storage ------------------------------------------
+
+def save_sticker_blob(filename: str, data: bytes) -> None:
+    with _conn() as c:
+        c.execute(UPSERT_STICKER, (filename, data))
+
+
+def delete_sticker_blob(filename: str) -> bool:
+    with _conn() as c:
+        cur = c.execute(
+            f"DELETE FROM custom_stickers WHERE filename = {PARAM}", (filename,)
+        )
+        return cur.rowcount > 0
+
+
+def list_sticker_blobs() -> list[tuple[str, bytes]]:
+    with _conn() as c:
+        cur = c.execute(
+            "SELECT filename, image FROM custom_stickers ORDER BY filename"
+        )
+        rows = cur.fetchall()
+    return [(_row_get(r, "filename"), bytes(_row_get(r, "image"))) for r in rows]
