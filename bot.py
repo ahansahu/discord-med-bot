@@ -68,6 +68,17 @@ async def _fetch_bytes(url: str) -> bytes:
             return await r.read()
 
 
+async def _wrong_channel(interaction: discord.Interaction) -> bool:
+    """Reject slash commands invoked outside the configured channel."""
+    if interaction.channel_id == CHANNEL_ID:
+        return False
+    await interaction.response.send_message(
+        f"please use this command in <#{CHANNEL_ID}> 🙏",
+        ephemeral=True,
+    )
+    return True
+
+
 async def _confirm(channel: discord.abc.Messageable, *, already: bool = False) -> None:
     if already:
         await channel.send("👌 already logged for today.")
@@ -75,11 +86,48 @@ async def _confirm(channel: discord.abc.Messageable, *, already: bool = False) -
         await channel.send("✅ logged! nice one.")
 
 
-async def _do_mark_taken(channel: discord.abc.Messageable) -> bool:
-    today = storage.today_str()
+async def _edit_reminder_to_logged(
+    bot_client: discord.Client, med_day: str
+) -> None:
+    """Edit the original reminder message to reflect the logged state."""
+    msg_id = storage.get_reminder_msg_id(med_day)
+    if msg_id is None:
+        return
+    channel = bot_client.get_channel(CHANNEL_ID)
+    if channel is None:
+        try:
+            channel = await bot_client.fetch_channel(CHANNEL_ID)
+        except discord.HTTPException as e:
+            log.warning("could not fetch channel for reminder edit: %s", e)
+            return
+    try:
+        msg = await channel.fetch_message(msg_id)
+        when = datetime.now(TZ).strftime("%H:%M")
+        await msg.edit(
+            content=f"✅ Medication logged at {when} — no more reminders today."
+        )
+    except discord.HTTPException as e:
+        log.warning("could not edit reminder message %s: %s", msg_id, e)
+
+
+async def _do_mark_taken(
+    channel: discord.abc.Messageable, bot_client: discord.Client
+) -> bool:
+    med_day = storage.medication_day_str()
+    if not storage.is_pending(med_day):
+        row = storage.get_status(med_day)
+        if row is None:
+            await channel.send("no active reminder right now — nothing to log.")
+        elif row["status"] == "taken":
+            await _confirm(channel, already=True)
+        else:
+            await channel.send("that reminder already expired (marked missed).")
+        return False
     sticker_idx = chart.random_sticker_index()
-    newly = storage.mark_taken(today, sticker_idx)
+    newly = storage.mark_taken(med_day, sticker_idx)
     await _confirm(channel, already=not newly)
+    if newly:
+        await _edit_reminder_to_logged(bot_client, med_day)
     return newly
 
 
@@ -123,7 +171,7 @@ async def on_message(message: discord.Message) -> None:
         return
     text = message.content.strip().lower()
     if any(text == w or text.startswith(w + " ") or text.startswith(w + "!") for w in CONFIRM_WORDS):
-        await _do_mark_taken(message.channel)
+        await _do_mark_taken(message.channel, bot)
     await bot.process_commands(message)
 
 
@@ -139,32 +187,44 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent) -> None:
         return
     if str(payload.emoji) not in CONFIRM_REACTIONS:
         return
-    today = storage.today_str()
-    expected = storage.get_reminder_msg_id(today)
+    med_day = storage.medication_day_str()
+    expected = storage.get_reminder_msg_id(med_day)
     if expected is None or payload.message_id != expected:
         return
     channel = bot.get_channel(payload.channel_id) or await bot.fetch_channel(payload.channel_id)
-    await _do_mark_taken(channel)
+    await _do_mark_taken(channel, bot)
 
 
 # ---------- slash commands ----------
 
 @bot.tree.command(name="taken", description="Mark today's medication as taken.")
 async def cmd_taken(interaction: discord.Interaction) -> None:
+    if await _wrong_channel(interaction):
+        return
     if not _is_target(interaction.user.id):
         await interaction.response.send_message(
             "this bot only tracks one user 🙏", ephemeral=True)
         return
-    today = storage.today_str()
+    med_day = storage.medication_day_str()
+    existing = storage.get_status(med_day)
+    if existing is not None and existing["status"] == "missed":
+        await interaction.response.send_message(
+            "that day was already marked missed — can't log it retroactively."
+        )
+        return
     sticker_idx = chart.random_sticker_index()
-    newly = storage.mark_taken(today, sticker_idx)
+    newly = storage.mark_taken(med_day, sticker_idx)
     await interaction.response.send_message(
         "✅ logged! nice one." if newly else "👌 already logged for today."
     )
+    if newly:
+        await _edit_reminder_to_logged(bot, med_day)
 
 
 @bot.tree.command(name="status", description="Show today's medication status.")
 async def cmd_status(interaction: discord.Interaction) -> None:
+    if await _wrong_channel(interaction):
+        return
     today = storage.today_str()
     row = storage.get_status(today)
     if row is None:
@@ -187,6 +247,8 @@ async def cmd_status(interaction: discord.Interaction) -> None:
 
 @bot.tree.command(name="week", description="Last-7-days summary with sticker strip.")
 async def cmd_week(interaction: discord.Interaction) -> None:
+    if await _wrong_channel(interaction):
+        return
     await interaction.response.defer(thinking=True)
     png = chart.render_week_strip()
     file = discord.File(io.BytesIO(png), filename="week.png")
@@ -223,11 +285,15 @@ async def _send_month(interaction: discord.Interaction) -> None:
 
 @bot.tree.command(name="month", description="This month's sticker chart and summary.")
 async def cmd_month(interaction: discord.Interaction) -> None:
+    if await _wrong_channel(interaction):
+        return
     await _send_month(interaction)
 
 
 @bot.tree.command(name="chart", description="Alias for /month.")
 async def cmd_chart(interaction: discord.Interaction) -> None:
+    if await _wrong_channel(interaction):
+        return
     await _send_month(interaction)
 
 
@@ -340,6 +406,8 @@ async def _import_stickers(message: discord.Message) -> None:
     description="Import a Discord emoji (react) or sticker (reply) as a custom sticker.",
 )
 async def cmd_importsticker(interaction: discord.Interaction) -> None:
+    if await _wrong_channel(interaction):
+        return
     if not _is_target(interaction.user.id):
         await interaction.response.send_message(
             "this bot only tracks one user 🙏", ephemeral=True)

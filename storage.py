@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from typing import Iterable, Optional
 
-from config import DB_PATH, DATABASE_URL, TZ, USE_POSTGRES
+from config import DB_PATH, DATABASE_URL, MISSED_CUTOFF_HOUR, TZ, USE_POSTGRES
 
 log = logging.getLogger("med_bot.storage")
 
@@ -97,6 +97,17 @@ def today_str() -> str:
     return datetime.now(TZ).date().isoformat()
 
 
+def medication_day_str() -> str:
+    """The active medication day. Until MISSED_CUTOFF_HOUR (02:00 local), the
+    previous calendar day still owns any pending reminder, so 'yes' or a ✅
+    reaction at 01:30 Sunday should resolve Saturday's reminder."""
+    now = datetime.now(TZ)
+    d = now.date()
+    if now.hour < MISSED_CUTOFF_HOUR:
+        d -= timedelta(days=1)
+    return d.isoformat()
+
+
 def ensure_day(d: str) -> None:
     with _conn() as c:
         c.execute(INSERT_IGNORE_DAY, (d,))
@@ -127,13 +138,17 @@ def get_reminder_msg_id(d: str) -> Optional[int]:
 
 
 def mark_taken(d: str, sticker_index: int) -> bool:
-    """Returns True if newly marked, False if already taken."""
+    """Returns True if newly marked, False if already taken or missed.
+
+    A 'missed' day cannot be retroactively marked taken — once the 02:00
+    cutoff has run for that day, the entry is final.
+    """
     with _conn() as c:
         cur = c.execute(
             f"SELECT status FROM daily_log WHERE date = {PARAM}", (d,)
         )
         row = cur.fetchone()
-        if row and _row_get(row, "status") == "taken":
+        if row and _row_get(row, "status") in ("taken", "missed"):
             return False
         now_iso = datetime.now(TZ).isoformat(timespec="seconds")
         c.execute(UPSERT_TAKEN, (d, now_iso, sticker_index))
