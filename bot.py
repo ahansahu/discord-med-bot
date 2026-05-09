@@ -383,8 +383,8 @@ async def cmd_removesticker(interaction: discord.Interaction, name: str) -> None
         return
     if chart.remove_custom_sticker(name):
         await interaction.response.send_message(
-            f"🗑️ removed `{name}`. existing chart entries referencing it will "
-            f"wrap around the remaining pool."
+            f"🗑️ removed `{name}`. any past chart entries that referenced it "
+            f"will fall back to the first built-in sticker."
         )
     else:
         await interaction.response.send_message(
@@ -458,6 +458,7 @@ async def cmd_importsticker(interaction: discord.Interaction) -> None:
 
 def main() -> None:
     storage.init_db()
+    chart.hydrate_custom_stickers()
     bot.run(DISCORD_TOKEN)
 
 
