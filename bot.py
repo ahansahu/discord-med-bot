@@ -10,7 +10,6 @@ from discord.ext import commands
 from config import (
     CHANNEL_ID,
     CONFIRM_REACTIONS,
-    CONFIRM_WORDS,
     DISCORD_TOKEN,
     GUILD_ID,
     REMINDER_HOURS,
@@ -171,9 +170,6 @@ async def on_message(message: discord.Message) -> None:
             _is_active_import_prompt(message.reference.message_id):
         await _import_stickers(message)
         return
-    text = message.content.strip().lower()
-    if any(text == w or text.startswith(w + " ") or text.startswith(w + "!") for w in CONFIRM_WORDS):
-        await _do_mark_taken(message.channel, bot)
     await bot.process_commands(message)
 
 
@@ -249,7 +245,7 @@ async def cmd_status(interaction: discord.Interaction) -> None:
     elif row["status"] == "missed":
         msg = "❌ marked as missed for today."
     else:
-        msg = f"⏳ pending — reply `yes` or react ✅ on the reminder. next nudge at {_next_reminder_str()}."
+        msg = f"⏳ pending — use `/taken` or react ✅ on the reminder. next nudge at {_next_reminder_str()}."
     streak = storage.current_streak()
     msg += f"\ncurrent streak: **{streak}** day{'s' if streak != 1 else ''}"
     await interaction.response.send_message(msg)

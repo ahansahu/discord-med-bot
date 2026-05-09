@@ -35,7 +35,6 @@ REMINDER_HOURS = (11, 15, 19, 23)
 MISSED_CUTOFF_HOUR = 2
 
 CONFIRM_REACTIONS = {"✅", "☑️", "\U0001f44d"}
-CONFIRM_WORDS = ("yes", "y", "taken", "done", "yep", "yeah")
 
 # Optional: external uptime monitoring. Leave blank to disable.
 UPTIMEROBOT_HEARTBEAT_URL = os.getenv("UPTIMEROBOT_HEARTBEAT_URL", "").strip()
