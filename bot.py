@@ -13,6 +13,7 @@ from config import (
     CONFIRM_WORDS,
     DISCORD_TOKEN,
     GUILD_ID,
+    REMINDER_HOURS,
     STICKER_DIR,
     TARGET_USER_ID,
     TZ,
@@ -222,6 +223,14 @@ async def cmd_taken(interaction: discord.Interaction) -> None:
         await _edit_reminder_to_logged(bot, med_day)
 
 
+def _next_reminder_str() -> str:
+    now = datetime.now(TZ)
+    upcoming = next((h for h in REMINDER_HOURS if h > now.hour), None)
+    if upcoming is not None:
+        return f"{upcoming:02d}:00"
+    return f"{REMINDER_HOURS[0]:02d}:00 tomorrow"
+
+
 @bot.tree.command(name="status", description="Show today's medication status.")
 async def cmd_status(interaction: discord.Interaction) -> None:
     if await _wrong_channel(interaction):
@@ -229,7 +238,7 @@ async def cmd_status(interaction: discord.Interaction) -> None:
     today = storage.today_str()
     row = storage.get_status(today)
     if row is None:
-        msg = "no entry for today yet — first reminder fires at 11:00."
+        msg = f"no entry for today yet — next reminder at {_next_reminder_str()}."
     elif row["status"] == "taken":
         when = row["taken_at"]
         try:
@@ -240,7 +249,7 @@ async def cmd_status(interaction: discord.Interaction) -> None:
     elif row["status"] == "missed":
         msg = "❌ marked as missed for today."
     else:
-        msg = "⏳ pending — reply `yes` or react ✅ on the reminder."
+        msg = f"⏳ pending — reply `yes` or react ✅ on the reminder. next nudge at {_next_reminder_str()}."
     streak = storage.current_streak()
     msg += f"\ncurrent streak: **{streak}** day{'s' if streak != 1 else ''}"
     await interaction.response.send_message(msg)
