@@ -46,9 +46,9 @@ MISSED_NOTICE = (
 async def _send_reminder(bot: discord.Client, *, is_first: bool) -> None:
     today = storage.today_str()
     storage.ensure_day(today)
-    if not storage.is_pending(today):
-        log.info("skip reminder: %s already %s", today,
-                 storage.get_status(today)["status"] if storage.get_status(today) else "?")
+    row = storage.get_status(today)
+    if row is None or row["status"] != "pending":
+        log.info("skip reminder: %s already %s", today, row["status"] if row else "?")
         return
     channel = bot.get_channel(CHANNEL_ID) or await bot.fetch_channel(CHANNEL_ID)
     text = (REMINDER_TEXT if is_first else NUDGE_TEXT).format(user_id=TARGET_USER_ID)
