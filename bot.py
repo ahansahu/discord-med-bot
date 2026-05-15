@@ -1,5 +1,6 @@
 import io
 import logging
+import random
 from datetime import datetime, timedelta, timezone
 
 import aiohttp
@@ -440,6 +441,39 @@ async def cmd_importsticker(interaction: discord.Interaction) -> None:
     )
     msg = await interaction.original_response()
     _register_import_prompt(msg.id)
+
+
+@bot.tree.command(
+    name="updatestickers",
+    description="Replace built-in stickers in past logs with your custom stickers.",
+)
+async def cmd_updatestickers(interaction: discord.Interaction) -> None:
+    if not _is_target(interaction.user.id):
+        await interaction.response.send_message(
+            "this bot only tracks one user 🙏", ephemeral=True)
+        return
+    pool = chart._sticker_pool()
+    if len(pool) <= chart.STICKER_COUNT:
+        await interaction.response.send_message(
+            "no custom stickers found — upload some with `/addsticker` first.",
+            ephemeral=True,
+        )
+        return
+    await interaction.response.defer(thinking=True)
+    dates = storage.get_taken_builtin_dates(chart.STICKER_COUNT)
+    if not dates:
+        await interaction.followup.send(
+            "all past entries already use custom stickers — nothing to update."
+        )
+        return
+    for d in dates:
+        new_index = random.randrange(chart.STICKER_COUNT, len(pool))
+        storage.update_sticker_index(d, new_index)
+    n = len(dates)
+    await interaction.followup.send(
+        f"✅ updated **{n}** past {'entry' if n == 1 else 'entries'} "
+        f"to use your custom stickers."
+    )
 
 
 def main() -> None:
