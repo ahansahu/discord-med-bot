@@ -172,7 +172,12 @@ def _sticker_pool() -> list[Path]:
 
 
 def random_sticker_index() -> int:
-    return random.randrange(len(_sticker_pool()))
+    # Pool order is built-ins first (indices 0..STICKER_COUNT-1), then customs.
+    # Prefer customs when any are present; fall back to built-ins otherwise.
+    pool = _sticker_pool()
+    if len(pool) > STICKER_COUNT:
+        return random.randrange(STICKER_COUNT, len(pool))
+    return random.randrange(STICKER_COUNT)
 
 
 def _load_sticker(index: int, size: int, pool: list[Path] | None = None) -> Image.Image:
