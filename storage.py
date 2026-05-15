@@ -66,25 +66,27 @@ if USE_POSTGRES:
         f"INSERT INTO custom_stickers (filename, image) VALUES ({PARAM}, {PARAM}) "
         "ON CONFLICT (filename) DO UPDATE SET image = EXCLUDED.image"
     )
-    SUPABASE_GRANTS = """
+    SUPABASE_GRANTS_TABLES = ("daily_log", "custom_stickers")
+    # Per-table grants run in their own transaction so a failure on one table
+    # (or on the GRANTS step itself) cannot roll back the preceding CREATE
+    # TABLE. The service_role GRANT is required for new public tables to be
+    # visible via the Supabase Data API / dashboard under the May-30 default
+    # (new tables get no role grants without an explicit GRANT).
+    SUPABASE_GRANTS_PER_TABLE = """
 DO $$
 BEGIN
-  ALTER TABLE public.daily_log ENABLE ROW LEVEL SECURITY;
-  ALTER TABLE public.custom_stickers ENABLE ROW LEVEL SECURITY;
+  ALTER TABLE public.{table} ENABLE ROW LEVEL SECURITY;
 
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
-    REVOKE ALL ON public.daily_log FROM anon;
-    REVOKE ALL ON public.custom_stickers FROM anon;
+    REVOKE ALL ON public.{table} FROM anon;
   END IF;
 
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
-    REVOKE ALL ON public.daily_log FROM authenticated;
-    REVOKE ALL ON public.custom_stickers FROM authenticated;
+    REVOKE ALL ON public.{table} FROM authenticated;
   END IF;
 
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
-    GRANT SELECT, INSERT, UPDATE, DELETE ON public.daily_log TO service_role;
-    GRANT SELECT, INSERT, UPDATE, DELETE ON public.custom_stickers TO service_role;
+    GRANT SELECT, INSERT, UPDATE, DELETE ON public.{table} TO service_role;
   END IF;
 END $$;
 """
@@ -136,8 +138,18 @@ def init_db() -> None:
     with _conn() as c:
         c.execute(SCHEMA)
         c.execute(CUSTOM_STICKERS_SCHEMA)
-        if USE_POSTGRES:
-            c.execute(SUPABASE_GRANTS)
+    if USE_POSTGRES:
+        for table in SUPABASE_GRANTS_TABLES:
+            try:
+                with _conn() as c:
+                    c.execute(SUPABASE_GRANTS_PER_TABLE.format(table=table))
+            except Exception as e:
+                log.warning(
+                    "supabase RLS/grants step failed for %s "
+                    "(table itself is created): %s",
+                    table,
+                    e,
+                )
 
 
 def today_str() -> str:
