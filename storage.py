@@ -72,6 +72,16 @@ BEGIN
   ALTER TABLE public.daily_log ENABLE ROW LEVEL SECURITY;
   ALTER TABLE public.custom_stickers ENABLE ROW LEVEL SECURITY;
 
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+    REVOKE ALL ON public.daily_log FROM anon;
+    REVOKE ALL ON public.custom_stickers FROM anon;
+  END IF;
+
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+    REVOKE ALL ON public.daily_log FROM authenticated;
+    REVOKE ALL ON public.custom_stickers FROM authenticated;
+  END IF;
+
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
     GRANT SELECT, INSERT, UPDATE, DELETE ON public.daily_log TO service_role;
     GRANT SELECT, INSERT, UPDATE, DELETE ON public.custom_stickers TO service_role;
