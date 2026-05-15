@@ -338,6 +338,7 @@ DAY_FG = (90, 80, 70)
 MISSED_FG = (180, 60, 60)
 PENDING_FG = (140, 130, 120)
 LEGEND_FILL = (255, 255, 255, 50)
+LEGEND_BORDER = (245, 180, 50, 230)
 LEGEND_FG = (55, 70, 70)
 CELL_RADIUS = 6
 
@@ -368,7 +369,7 @@ def _draw_legend(draw: ImageDraw.ImageDraw, img: Image.Image,
     pill_layer = Image.new("RGBA", (pill_w, pill_h), (0, 0, 0, 0))
     ImageDraw.Draw(pill_layer).rounded_rectangle(
         [0, 0, pill_w - 1, pill_h - 1],
-        radius=10, fill=LEGEND_FILL,
+        radius=10, fill=LEGEND_FILL, outline=LEGEND_BORDER, width=2,
     )
     img.alpha_composite(pill_layer, (pill_x, pill_y))
 
