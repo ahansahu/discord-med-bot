@@ -19,10 +19,26 @@ STICKER_SIZE = 96
 STICKER_COUNT = 6
 CUSTOM_PREFIX = "custom_"
 
+ASSETS_DIR = Path(__file__).parent / "assets"
+DECOR_DIR = ASSETS_DIR / "decor"
+FONT_DIR = ASSETS_DIR / "fonts"
+BG_PATH = DECOR_DIR / "background.png"
+SERIF_FONT_PATH = FONT_DIR / "PlayfairDisplay-VF.ttf"
+
 
 # ---------- font loading ----------
 
-def _load_font(size: int) -> ImageFont.ImageFont:
+def _load_font(size: int, prefer_serif: bool = False) -> ImageFont.ImageFont:
+    if prefer_serif and SERIF_FONT_PATH.exists():
+        try:
+            font = ImageFont.truetype(str(SERIF_FONT_PATH), size)
+            try:
+                font.set_variation_by_name("Bold")
+            except (OSError, AttributeError):
+                pass
+            return font
+        except (OSError, IOError):
+            pass
     candidates = [
         "DejaVuSans-Bold.ttf",
         "DejaVuSans.ttf",
@@ -287,6 +303,60 @@ TITLE_FG = (60, 50, 40)
 DAY_FG = (90, 80, 70)
 MISSED_FG = (180, 60, 60)
 PENDING_FG = (140, 130, 120)
+CELL_FILL = (255, 255, 255, 170)
+LEGEND_FILL = (255, 255, 255, 225)
+LEGEND_FG = (60, 50, 40)
+
+
+def _draw_legend(draw: ImageDraw.ImageDraw, img: Image.Image,
+                 image_w: int, footer_top: int, footer_h: int,
+                 taken: int, missed: int, streak: int,
+                 font: ImageFont.ImageFont, pool: list) -> None:
+    cy = footer_top + footer_h // 2
+    icon_size = 24
+    gap = 8
+    seg_gap = 24
+    pill_pad_x = 22
+
+    streak_text = f"Streak {streak} day{'s' if streak != 1 else ''}"
+    labels = [f"Taken {taken}", f"Missed {missed}", streak_text]
+    seg_widths = [icon_size + gap + int(draw.textlength(lbl, font=font)) for lbl in labels]
+    content_w = sum(seg_widths) + seg_gap * 2
+    pill_w = content_w + pill_pad_x * 2
+    pill_h = footer_h - 10
+    pill_x = (image_w - pill_w) // 2
+    pill_y = footer_top + (footer_h - pill_h) // 2
+
+    draw.rounded_rectangle(
+        [pill_x, pill_y, pill_x + pill_w, pill_y + pill_h],
+        radius=pill_h // 2, fill=LEGEND_FILL, outline=GRID, width=1,
+    )
+
+    ascent, _ = font.getmetrics()
+    text_y = cy - ascent // 2 - 1
+    start_x = pill_x + pill_pad_x
+
+    sx = start_x
+    sticker = _load_sticker(1, icon_size, pool)
+    img.paste(sticker, (sx, cy - icon_size // 2), sticker)
+    draw.text((sx + icon_size + gap, text_y), labels[0], fill=LEGEND_FG, font=font)
+
+    sx = start_x + seg_widths[0] + seg_gap
+    xr = icon_size // 2 - 3
+    xcx = sx + icon_size // 2
+    draw.line([(xcx - xr, cy - xr), (xcx + xr, cy + xr)], fill=MISSED_FG, width=4)
+    draw.line([(xcx - xr, cy + xr), (xcx + xr, cy - xr)], fill=MISSED_FG, width=4)
+    draw.text((sx + icon_size + gap, text_y), labels[1], fill=LEGEND_FG, font=font)
+
+    sx = start_x + seg_widths[0] + seg_widths[1] + seg_gap * 2
+    box_size = icon_size - 4
+    bx = sx + (icon_size - box_size) // 2
+    by = cy - box_size // 2
+    draw.rounded_rectangle(
+        [bx, by, bx + box_size, by + box_size],
+        radius=4, outline=PENDING_FG, width=2,
+    )
+    draw.text((sx + icon_size + gap, text_y), labels[2], fill=LEGEND_FG, font=font)
 
 
 def render_month(year: int, month: int) -> bytes:
@@ -299,14 +369,20 @@ def render_month(year: int, month: int) -> bytes:
 
     title_h = 70
     weekday_h = 36
-    footer_h = 50
+    footer_h = 56
     width = pad * 2 + cols * cell
     height = pad * 2 + title_h + weekday_h + rows * cell + footer_h
 
-    img = Image.new("RGB", (width, height), BG)
-    draw = ImageDraw.Draw(img)
+    img = Image.new("RGBA", (width, height), BG + (255,))
+    if BG_PATH.exists():
+        try:
+            bg = Image.open(BG_PATH).convert("RGBA").resize((width, height), Image.LANCZOS)
+            img.paste(bg, (0, 0), bg)
+        except Exception as e:
+            log.warning("could not load decor background %s: %s", BG_PATH, e)
+    draw = ImageDraw.Draw(img, "RGBA")
 
-    title_font = _load_font(38)
+    title_font = _load_font(46, prefer_serif=True)
     day_label_font = _load_font(20)
     day_num_font = _load_font(18)
     footer_font = _load_font(20)
@@ -338,9 +414,11 @@ def render_month(year: int, month: int) -> bytes:
         for c, day in enumerate(week):
             x0 = pad + c * cell
             y0 = grid_y0 + r * cell
-            draw.rectangle([x0, y0, x0 + cell, y0 + cell], outline=GRID, width=1)
             if day == 0:
+                draw.rectangle([x0, y0, x0 + cell, y0 + cell], outline=GRID, width=1)
                 continue
+            draw.rectangle([x0, y0, x0 + cell, y0 + cell],
+                           fill=CELL_FILL, outline=GRID, width=1)
             d = date(year, month, day)
             draw.text((x0 + 6, y0 + 4), str(day), fill=DAY_FG, font=day_num_font)
             row = logs.get(d.isoformat())
@@ -365,12 +443,11 @@ def render_month(year: int, month: int) -> bytes:
     # footer
     cnt = storage.counts(start, end)
     streak = storage.current_streak()
-    footer = f"Taken {cnt['taken']}  ·  Missed {cnt['missed']}  ·  Streak {streak} day{'s' if streak != 1 else ''}"
-    fw = draw.textlength(footer, font=footer_font)
-    draw.text(((width - fw) // 2, height - footer_h + 12), footer, fill=TITLE_FG, font=footer_font)
+    _draw_legend(draw, img, width, height - footer_h, footer_h,
+                 cnt["taken"], cnt["missed"], streak, footer_font, pool)
 
     out = io.BytesIO()
-    img.save(out, "PNG")
+    img.convert("RGB").save(out, "PNG")
     return out.getvalue()
 
 
