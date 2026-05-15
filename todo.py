@@ -9,7 +9,7 @@ import discord
 from discord import app_commands, ui
 from discord.ext import commands
 
-from config import TARGET_USER_ID, TODO_CHANNEL_ID
+from config import TODO_CHANNEL_ID
 import storage
 
 log = logging.getLogger("med_bot.todo")
@@ -30,17 +30,8 @@ def _truncate(text: str) -> str:
     return text if len(text) <= ITEM_LABEL_MAX else text[: ITEM_LABEL_MAX - 1] + "…"
 
 
-def _is_target(interaction: discord.Interaction) -> bool:
-    return interaction.user.id == TARGET_USER_ID
-
-
-async def _gate(interaction: discord.Interaction) -> bool:
+async def _gate(_interaction: discord.Interaction) -> bool:
     """Returns True if the interaction should be ignored (and a reply sent)."""
-    if not _is_target(interaction):
-        await interaction.response.send_message(
-            "this bot only tracks one user 🙏", ephemeral=True
-        )
-        return True
     return False
 
 
@@ -638,15 +629,8 @@ async def _wrong_todo_channel(interaction: discord.Interaction) -> bool:
 
 
 async def _slash_gate(interaction: discord.Interaction) -> bool:
-    """Channel + target-user guard for /todo commands. True → reject."""
-    if await _wrong_todo_channel(interaction):
-        return True
-    if not _is_target(interaction):
-        await interaction.response.send_message(
-            "this bot only tracks one user 🙏", ephemeral=True
-        )
-        return True
-    return False
+    """Channel guard for /todo commands. True → reject."""
+    return await _wrong_todo_channel(interaction)
 
 
 async def _item_autocomplete(
