@@ -23,22 +23,28 @@ ASSETS_DIR = Path(__file__).parent / "assets"
 DECOR_DIR = ASSETS_DIR / "decor"
 FONT_DIR = ASSETS_DIR / "fonts"
 BG_PATH = DECOR_DIR / "background.png"
-SERIF_FONT_PATH = FONT_DIR / "PlayfairDisplay-VF.ttf"
+SERIF_FONT_CANDIDATES = [
+    (FONT_DIR / "Fraunces-VF.ttf", "SemiBold"),
+    (FONT_DIR / "PlayfairDisplay-VF.ttf", "Bold"),
+]
 
 
 # ---------- font loading ----------
 
 def _load_font(size: int, prefer_serif: bool = False) -> ImageFont.ImageFont:
-    if prefer_serif and SERIF_FONT_PATH.exists():
-        try:
-            font = ImageFont.truetype(str(SERIF_FONT_PATH), size)
+    if prefer_serif:
+        for path, instance in SERIF_FONT_CANDIDATES:
+            if not path.exists():
+                continue
             try:
-                font.set_variation_by_name("Bold")
-            except (OSError, AttributeError):
-                pass
-            return font
-        except (OSError, IOError):
-            pass
+                font = ImageFont.truetype(str(path), size)
+                try:
+                    font.set_variation_by_name(instance)
+                except (OSError, AttributeError):
+                    pass
+                return font
+            except (OSError, IOError):
+                continue
     candidates = [
         "DejaVuSans-Bold.ttf",
         "DejaVuSans.ttf",
