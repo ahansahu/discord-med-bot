@@ -7,7 +7,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from config import STICKER_DIR, TZ
 import storage
@@ -281,12 +281,123 @@ def hydrate_custom_stickers() -> None:
 
 # ---------- chart rendering ----------
 
-BG = (250, 247, 240)
-GRID = (210, 200, 180)
-TITLE_FG = (60, 50, 40)
-DAY_FG = (90, 80, 70)
-MISSED_FG = (180, 60, 60)
-PENDING_FG = (140, 130, 120)
+# Beachy palette: sand + sea + sky + coral.
+SAND_TOP = (224, 238, 244)      # pale sky at the top of the canvas
+SAND_MID = (252, 244, 224)      # warm sand
+SAND_BOTTOM = (240, 220, 188)   # deeper sand at the bottom
+SEA = (138, 196, 208)           # sea-foam teal — header band, wave
+SEA_DEEP = (62, 120, 138)       # deep teal — title text, footer text
+CELL_FILL = (255, 251, 242)     # soft cream day-cards
+CELL_SHADOW = (170, 140, 100)   # warm shadow under cards
+GRID_SOFT = (220, 198, 170)     # very soft cell outline
+CORAL = (240, 140, 110)         # today pill, accent
+TITLE_FG = SEA_DEEP
+DAY_FG = (96, 82, 66)
+MISSED_FG = (200, 90, 80)
+PENDING_FG = (150, 140, 125)
+
+
+def _paint_sand_gradient(img: Image.Image) -> None:
+    w, h = img.size
+    draw = ImageDraw.Draw(img)
+    mid = int(h * 0.32)
+    for y in range(h):
+        if y <= mid:
+            t = y / max(mid, 1)
+            r = int(SAND_TOP[0] + (SAND_MID[0] - SAND_TOP[0]) * t)
+            g = int(SAND_TOP[1] + (SAND_MID[1] - SAND_TOP[1]) * t)
+            b = int(SAND_TOP[2] + (SAND_MID[2] - SAND_TOP[2]) * t)
+        else:
+            t = (y - mid) / max(h - 1 - mid, 1)
+            r = int(SAND_MID[0] + (SAND_BOTTOM[0] - SAND_MID[0]) * t)
+            g = int(SAND_MID[1] + (SAND_BOTTOM[1] - SAND_MID[1]) * t)
+            b = int(SAND_MID[2] + (SAND_BOTTOM[2] - SAND_MID[2]) * t)
+        draw.line([(0, y), (w, y)], fill=(r, g, b, 255))
+
+
+def _draw_card(
+    base: Image.Image,
+    box: list,
+    radius: int = 14,
+    fill: tuple = CELL_FILL,
+    outline: tuple = GRID_SOFT,
+    outline_width: int = 1,
+    shadow: bool = True,
+) -> None:
+    x0, y0, x1, y1 = box
+    if shadow:
+        pad = 8
+        offset = 3
+        layer = Image.new("RGBA", (x1 - x0 + pad * 2, y1 - y0 + pad * 2), (0, 0, 0, 0))
+        sd = ImageDraw.Draw(layer)
+        sd.rounded_rectangle(
+            [pad, pad, pad + (x1 - x0), pad + (y1 - y0)],
+            radius=radius,
+            fill=(*CELL_SHADOW, 110),
+        )
+        layer = layer.filter(ImageFilter.GaussianBlur(radius=3))
+        base.alpha_composite(layer, dest=(x0 - pad + offset, y0 - pad + offset))
+    ImageDraw.Draw(base).rounded_rectangle(
+        box, radius=radius, fill=fill, outline=outline, width=outline_width
+    )
+
+
+def _draw_wash(
+    base: Image.Image,
+    box: list,
+    radius: int,
+    color: tuple,
+    alpha: int,
+) -> None:
+    x0, y0, x1, y1 = box
+    layer = Image.new("RGBA", (x1 - x0, y1 - y0), (0, 0, 0, 0))
+    ImageDraw.Draw(layer).rounded_rectangle(
+        [0, 0, x1 - x0, y1 - y0], radius=radius, fill=(*color, alpha)
+    )
+    base.alpha_composite(layer, dest=(x0, y0))
+
+
+def _draw_wave(
+    draw: ImageDraw.ImageDraw,
+    x0: int,
+    x1: int,
+    y: int,
+    color: tuple,
+    amp: int = 4,
+    period: int = 28,
+    width: int = 2,
+) -> None:
+    points = []
+    x = x0
+    while x <= x1:
+        wy = y + amp * math.sin(2 * math.pi * (x - x0) / period)
+        points.append((x, wy))
+        x += 2
+    if len(points) >= 2:
+        draw.line(points, fill=color, width=width, joint="curve")
+
+
+def _draw_today_pill(
+    draw: ImageDraw.ImageDraw,
+    x: int,
+    y: int,
+    label: str,
+    font: ImageFont.ImageFont,
+    fill: tuple = CORAL,
+    fg: tuple = (255, 255, 255),
+) -> None:
+    tw = draw.textlength(label, font=font)
+    asc, desc = font.getmetrics()
+    th = asc + desc
+    pad_x = 6
+    pad_y = 1
+    radius = (th + pad_y * 2) // 2
+    draw.rounded_rectangle(
+        [x - pad_x, y - pad_y, x + tw + pad_x, y + th + pad_y],
+        radius=radius,
+        fill=fill,
+    )
+    draw.text((x, y), label, fill=fg, font=font)
 
 
 def render_month(year: int, month: int) -> bytes:
@@ -303,7 +414,8 @@ def render_month(year: int, month: int) -> bytes:
     width = pad * 2 + cols * cell
     height = pad * 2 + title_h + weekday_h + rows * cell + footer_h
 
-    img = Image.new("RGB", (width, height), BG)
+    img = Image.new("RGBA", (width, height), (0, 0, 0, 255))
+    _paint_sand_gradient(img)
     draw = ImageDraw.Draw(img)
 
     title_font = _load_font(38)
@@ -311,18 +423,32 @@ def render_month(year: int, month: int) -> bytes:
     day_num_font = _load_font(18)
     footer_font = _load_font(20)
 
+    # header wash
+    _draw_wash(img, [pad, pad, width - pad, pad + title_h - 6], radius=20, color=SEA, alpha=95)
+
     # title
     title = f"{calendar.month_name[month]} {year}"
     tw = draw.textlength(title, font=title_font)
-    draw.text(((width - tw) // 2, pad + 6), title, fill=TITLE_FG, font=title_font)
+    draw.text(((width - tw) // 2, pad + 8), title, fill=TITLE_FG, font=title_font)
 
-    # weekday labels
-    labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    # wave divider between header and weekday row
+    _draw_wave(draw, pad + 8, width - pad - 8, pad + title_h - 2, SEA_DEEP, amp=3, period=26, width=2)
+
+    # weekday labels with a soft cream strip behind
     label_y = pad + title_h
+    _draw_card(
+        img,
+        [pad, label_y + 2, width - pad, label_y + weekday_h - 2],
+        radius=14,
+        fill=CELL_FILL,
+        outline=GRID_SOFT,
+        shadow=False,
+    )
+    labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
     for i, lbl in enumerate(labels):
         x = pad + i * cell
         lw = draw.textlength(lbl, font=day_label_font)
-        draw.text((x + (cell - lw) // 2, label_y + 6), lbl, fill=DAY_FG, font=day_label_font)
+        draw.text((x + (cell - lw) // 2, label_y + 6), lbl, fill=SEA_DEEP, font=day_label_font)
 
     # grid + content
     grid_y0 = pad + title_h + weekday_h
@@ -338,11 +464,22 @@ def render_month(year: int, month: int) -> bytes:
         for c, day in enumerate(week):
             x0 = pad + c * cell
             y0 = grid_y0 + r * cell
-            draw.rectangle([x0, y0, x0 + cell, y0 + cell], outline=GRID, width=1)
             if day == 0:
                 continue
+            # rounded cream card with soft shadow; 3px inset lets the gradient peek through
+            _draw_card(
+                img,
+                [x0 + 3, y0 + 3, x0 + cell - 3, y0 + cell - 3],
+                radius=14,
+                fill=CELL_FILL,
+                outline=GRID_SOFT,
+                shadow=True,
+            )
             d = date(year, month, day)
-            draw.text((x0 + 6, y0 + 4), str(day), fill=DAY_FG, font=day_num_font)
+            if d == today:
+                _draw_today_pill(draw, x0 + 8, y0 + 6, str(day), day_num_font)
+            else:
+                draw.text((x0 + 8, y0 + 6), str(day), fill=DAY_FG, font=day_num_font)
             row = logs.get(d.isoformat())
             cx = x0 + cell // 2
             cy = y0 + cell // 2 + 6
@@ -358,19 +495,19 @@ def render_month(year: int, month: int) -> bytes:
                 rr = sticker_size // 3
                 draw.ellipse([cx - rr, cy - rr, cx + rr, cy + rr],
                              outline=PENDING_FG, width=4)
-            elif d == today:
-                draw.rectangle([x0 + 2, y0 + 2, x0 + cell - 2, y0 + cell - 2],
-                               outline=(120, 144, 156), width=3)
+
+    # wave above footer
+    _draw_wave(draw, pad + 8, width - pad - 8, height - footer_h + 4, SEA_DEEP, amp=3, period=26, width=2)
 
     # footer
     cnt = storage.counts(start, end)
     streak = storage.current_streak()
     footer = f"Taken {cnt['taken']}  ·  Missed {cnt['missed']}  ·  Streak {streak} day{'s' if streak != 1 else ''}"
     fw = draw.textlength(footer, font=footer_font)
-    draw.text(((width - fw) // 2, height - footer_h + 12), footer, fill=TITLE_FG, font=footer_font)
+    draw.text(((width - fw) // 2, height - footer_h + 14), footer, fill=SEA_DEEP, font=footer_font)
 
     out = io.BytesIO()
-    img.save(out, "PNG")
+    img.convert("RGB").save(out, "PNG")
     return out.getvalue()
 
 
@@ -387,20 +524,38 @@ def render_week_strip(end_day: Optional[date] = None) -> bytes:
     width = pad * 2 + 7 * cell
     height = pad * 2 + title_h + label_h + cell + footer_h
 
-    img = Image.new("RGB", (width, height), BG)
+    img = Image.new("RGBA", (width, height), (0, 0, 0, 255))
+    _paint_sand_gradient(img)
     draw = ImageDraw.Draw(img)
 
     title_font = _load_font(28)
     label_font = _load_font(18)
     footer_font = _load_font(18)
 
+    # header wash + title
+    _draw_wash(img, [pad, pad, width - pad, pad + title_h - 6], radius=18, color=SEA, alpha=95)
     title = "Last 7 days"
     tw = draw.textlength(title, font=title_font)
-    draw.text(((width - tw) // 2, pad + 6), title, fill=TITLE_FG, font=title_font)
+    draw.text(((width - tw) // 2, pad + 8), title, fill=TITLE_FG, font=title_font)
+
+    # wave divider between header and labels
+    _draw_wave(draw, pad + 8, width - pad - 8, pad + title_h - 2, SEA_DEEP, amp=3, period=26, width=2)
+
+    # labels strip (one cream card spanning the labels row)
+    label_y = pad + title_h
+    _draw_card(
+        img,
+        [pad, label_y + 2, width - pad, label_y + label_h - 2],
+        radius=12,
+        fill=CELL_FILL,
+        outline=GRID_SOFT,
+        shadow=False,
+    )
 
     logs = storage.status_map(start_day, end_day)
     sticker_size = cell - 24
     pool = _sticker_pool()
+    today = datetime.now(TZ).date()
 
     for i in range(7):
         d = start_day + timedelta(days=i)
@@ -408,9 +563,20 @@ def render_week_strip(end_day: Optional[date] = None) -> bytes:
         y0 = pad + title_h
         lbl = d.strftime("%a %d")
         lw = draw.textlength(lbl, font=label_font)
-        draw.text((x0 + (cell - lw) // 2, y0 + 4), lbl, fill=DAY_FG, font=label_font)
+        label_x = int(x0 + (cell - lw) // 2)
+        if d == today:
+            _draw_today_pill(draw, label_x, y0 + 6, lbl, label_font)
+        else:
+            draw.text((label_x, y0 + 6), lbl, fill=SEA_DEEP, font=label_font)
         cy0 = y0 + label_h
-        draw.rectangle([x0, cy0, x0 + cell, cy0 + cell], outline=GRID, width=1)
+        _draw_card(
+            img,
+            [x0 + 4, cy0 + 4, x0 + cell - 4, cy0 + cell - 4],
+            radius=16,
+            fill=CELL_FILL,
+            outline=GRID_SOFT,
+            shadow=True,
+        )
         cx = x0 + cell // 2
         cy = cy0 + cell // 2
         row = logs.get(d.isoformat())
@@ -427,12 +593,15 @@ def render_week_strip(end_day: Optional[date] = None) -> bytes:
             draw.ellipse([cx - rr, cy - rr, cx + rr, cy + rr],
                          outline=PENDING_FG, width=4)
 
+    # wave above footer
+    _draw_wave(draw, pad + 8, width - pad - 8, height - footer_h + 4, SEA_DEEP, amp=3, period=26, width=2)
+
     cnt = storage.counts(start_day, end_day)
     streak = storage.current_streak()
     footer = f"Taken {cnt['taken']} / 7  ·  Streak {streak}"
     fw = draw.textlength(footer, font=footer_font)
-    draw.text(((width - fw) // 2, height - footer_h + 10), footer, fill=TITLE_FG, font=footer_font)
+    draw.text(((width - fw) // 2, height - footer_h + 12), footer, fill=SEA_DEEP, font=footer_font)
 
     out = io.BytesIO()
-    img.save(out, "PNG")
+    img.convert("RGB").save(out, "PNG")
     return out.getvalue()
