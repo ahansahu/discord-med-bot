@@ -21,6 +21,8 @@ def _int(name: str) -> int:
 DISCORD_TOKEN = _required("DISCORD_TOKEN")
 GUILD_ID = _int("GUILD_ID")
 CHANNEL_ID = _int("CHANNEL_ID")
+_todo_channel = os.getenv("TODO_CHANNEL_ID", "").strip()
+TODO_CHANNEL_ID = int(_todo_channel) if _todo_channel else None
 TARGET_USER_ID = _int("TARGET_USER_ID")
 TIMEZONE_NAME = os.getenv("TIMEZONE", "Europe/London")
 TZ = ZoneInfo(TIMEZONE_NAME)

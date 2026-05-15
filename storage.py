@@ -66,7 +66,46 @@ if USE_POSTGRES:
         f"INSERT INTO custom_stickers (filename, image) VALUES ({PARAM}, {PARAM}) "
         "ON CONFLICT (filename) DO UPDATE SET image = EXCLUDED.image"
     )
-    SUPABASE_GRANTS_TABLES = ("daily_log", "custom_stickers")
+    TODO_SECTIONS_SCHEMA = """
+    CREATE TABLE IF NOT EXISTS todo_sections (
+        id        BIGSERIAL PRIMARY KEY,
+        name      TEXT NOT NULL UNIQUE,
+        position  INTEGER NOT NULL
+    )
+    """
+    TODO_ITEMS_SCHEMA = """
+    CREATE TABLE IF NOT EXISTS todo_items (
+        id         BIGSERIAL PRIMARY KEY,
+        section_id BIGINT NOT NULL REFERENCES todo_sections(id) ON DELETE CASCADE,
+        text       TEXT NOT NULL,
+        position   INTEGER NOT NULL,
+        created_at TEXT NOT NULL
+    )
+    """
+    TODO_STATE_SCHEMA = """
+    CREATE TABLE IF NOT EXISTS todo_state (
+        key   TEXT PRIMARY KEY,
+        value TEXT
+    )
+    """
+    INSERT_SECTION_RETURN_ID = (
+        f"INSERT INTO todo_sections (name, position) VALUES ({PARAM}, {PARAM}) RETURNING id"
+    )
+    INSERT_ITEM_RETURN_ID = (
+        f"INSERT INTO todo_items (section_id, text, position, created_at) "
+        f"VALUES ({PARAM}, {PARAM}, {PARAM}, {PARAM}) RETURNING id"
+    )
+    UPSERT_TODO_STATE = (
+        f"INSERT INTO todo_state (key, value) VALUES ({PARAM}, {PARAM}) "
+        "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value"
+    )
+    SUPABASE_GRANTS_TABLES = (
+        "daily_log",
+        "custom_stickers",
+        "todo_sections",
+        "todo_items",
+        "todo_state",
+    )
     # Per-table grants run in their own transaction so a failure on one table
     # (or on the GRANTS step itself) cannot roll back the preceding CREATE
     # TABLE. The service_role GRANT is required for new public tables to be
@@ -129,6 +168,39 @@ else:
         f"INSERT INTO custom_stickers (filename, image) VALUES ({PARAM}, {PARAM}) "
         "ON CONFLICT(filename) DO UPDATE SET image = excluded.image"
     )
+    TODO_SECTIONS_SCHEMA = """
+    CREATE TABLE IF NOT EXISTS todo_sections (
+        id        INTEGER PRIMARY KEY AUTOINCREMENT,
+        name      TEXT NOT NULL UNIQUE,
+        position  INTEGER NOT NULL
+    )
+    """
+    TODO_ITEMS_SCHEMA = """
+    CREATE TABLE IF NOT EXISTS todo_items (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        section_id INTEGER NOT NULL REFERENCES todo_sections(id) ON DELETE CASCADE,
+        text       TEXT NOT NULL,
+        position   INTEGER NOT NULL,
+        created_at TEXT NOT NULL
+    )
+    """
+    TODO_STATE_SCHEMA = """
+    CREATE TABLE IF NOT EXISTS todo_state (
+        key   TEXT PRIMARY KEY,
+        value TEXT
+    )
+    """
+    INSERT_SECTION_RETURN_ID = (
+        f"INSERT INTO todo_sections (name, position) VALUES ({PARAM}, {PARAM})"
+    )
+    INSERT_ITEM_RETURN_ID = (
+        f"INSERT INTO todo_items (section_id, text, position, created_at) "
+        f"VALUES ({PARAM}, {PARAM}, {PARAM}, {PARAM})"
+    )
+    UPSERT_TODO_STATE = (
+        f"INSERT INTO todo_state (key, value) VALUES ({PARAM}, {PARAM}) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+    )
 
 
 # --- public API -----------------------------------------------------------
@@ -138,6 +210,9 @@ def init_db() -> None:
     with _conn() as c:
         c.execute(SCHEMA)
         c.execute(CUSTOM_STICKERS_SCHEMA)
+        c.execute(TODO_SECTIONS_SCHEMA)
+        c.execute(TODO_ITEMS_SCHEMA)
+        c.execute(TODO_STATE_SCHEMA)
     if USE_POSTGRES:
         for table in SUPABASE_GRANTS_TABLES:
             try:
@@ -321,3 +396,227 @@ def update_sticker_index(d: str, sticker_index: int) -> None:
             f"UPDATE daily_log SET sticker_index = {PARAM} WHERE date = {PARAM}",
             (sticker_index, d),
         )
+
+
+# --- todo list -----------------------------------------------------------
+
+def _row_to_section(r) -> dict:
+    return {
+        "id": _row_get(r, "id"),
+        "name": _row_get(r, "name"),
+        "position": _row_get(r, "position"),
+    }
+
+
+def _row_to_item(r) -> dict:
+    return {
+        "id": _row_get(r, "id"),
+        "section_id": _row_get(r, "section_id"),
+        "text": _row_get(r, "text"),
+        "position": _row_get(r, "position"),
+        "created_at": _row_get(r, "created_at"),
+    }
+
+
+def todo_sections_ordered() -> list[dict]:
+    with _conn() as c:
+        cur = c.execute(
+            "SELECT id, name, position FROM todo_sections ORDER BY position, id"
+        )
+        return [_row_to_section(r) for r in cur.fetchall()]
+
+
+def todo_section_by_name(name: str) -> Optional[dict]:
+    with _conn() as c:
+        cur = c.execute(
+            f"SELECT id, name, position FROM todo_sections WHERE name = {PARAM}",
+            (name,),
+        )
+        row = cur.fetchone()
+    return _row_to_section(row) if row else None
+
+
+def todo_section_create(name: str) -> int:
+    name = name.strip()
+    if not name:
+        raise ValueError("section name cannot be empty")
+    with _conn() as c:
+        cur = c.execute("SELECT COALESCE(MAX(position), -1) + 1 AS p FROM todo_sections")
+        pos = _row_get(cur.fetchone(), "p") or 0
+        if USE_POSTGRES:
+            cur = c.execute(INSERT_SECTION_RETURN_ID, (name, pos))
+            return _row_get(cur.fetchone(), "id")
+        cur = c.execute(INSERT_SECTION_RETURN_ID, (name, pos))
+        return cur.lastrowid
+
+
+def todo_section_rename(section_id: int, new_name: str) -> None:
+    new_name = new_name.strip()
+    if not new_name:
+        raise ValueError("section name cannot be empty")
+    with _conn() as c:
+        c.execute(
+            f"UPDATE todo_sections SET name = {PARAM} WHERE id = {PARAM}",
+            (new_name, section_id),
+        )
+
+
+def todo_section_delete(section_id: int) -> int:
+    """Delete a section and its items. Returns count of items removed."""
+    with _conn() as c:
+        cur = c.execute(
+            f"DELETE FROM todo_items WHERE section_id = {PARAM}", (section_id,)
+        )
+        removed = cur.rowcount or 0
+        c.execute(f"DELETE FROM todo_sections WHERE id = {PARAM}", (section_id,))
+    return removed
+
+
+def todo_section_move(section_id: int, direction: str) -> bool:
+    sections = todo_sections_ordered()
+    idx = next((i for i, s in enumerate(sections) if s["id"] == section_id), -1)
+    if idx < 0:
+        return False
+    if direction == "up" and idx == 0:
+        return False
+    if direction == "down" and idx == len(sections) - 1:
+        return False
+    other_idx = idx - 1 if direction == "up" else idx + 1
+    a, b = sections[idx], sections[other_idx]
+    with _conn() as c:
+        c.execute(
+            f"UPDATE todo_sections SET position = {PARAM} WHERE id = {PARAM}",
+            (b["position"], a["id"]),
+        )
+        c.execute(
+            f"UPDATE todo_sections SET position = {PARAM} WHERE id = {PARAM}",
+            (a["position"], b["id"]),
+        )
+    return True
+
+
+def todo_items_for_section(section_id: int) -> list[dict]:
+    with _conn() as c:
+        cur = c.execute(
+            f"SELECT id, section_id, text, position, created_at FROM todo_items "
+            f"WHERE section_id = {PARAM} ORDER BY position, id",
+            (section_id,),
+        )
+        return [_row_to_item(r) for r in cur.fetchall()]
+
+
+def todo_items_all_ordered() -> list[dict]:
+    """All items in section-then-position order. Each row gets `section_name`."""
+    with _conn() as c:
+        cur = c.execute(
+            "SELECT i.id, i.section_id, i.text, i.position, i.created_at, "
+            "s.name AS section_name, s.position AS section_position "
+            "FROM todo_items i JOIN todo_sections s ON s.id = i.section_id "
+            "ORDER BY s.position, s.id, i.position, i.id"
+        )
+        out = []
+        for r in cur.fetchall():
+            d = _row_to_item(r)
+            d["section_name"] = _row_get(r, "section_name")
+            out.append(d)
+        return out
+
+
+def todo_item_get(item_id: int) -> Optional[dict]:
+    with _conn() as c:
+        cur = c.execute(
+            f"SELECT id, section_id, text, position, created_at FROM todo_items "
+            f"WHERE id = {PARAM}",
+            (item_id,),
+        )
+        row = cur.fetchone()
+    return _row_to_item(row) if row else None
+
+
+def todo_item_add(section_id: int, text: str) -> int:
+    text = text.strip()
+    if not text:
+        raise ValueError("item text cannot be empty")
+    now = datetime.now(TZ).isoformat(timespec="seconds")
+    with _conn() as c:
+        cur = c.execute(
+            f"SELECT COALESCE(MAX(position), -1) + 1 AS p FROM todo_items "
+            f"WHERE section_id = {PARAM}",
+            (section_id,),
+        )
+        pos = _row_get(cur.fetchone(), "p") or 0
+        if USE_POSTGRES:
+            cur = c.execute(INSERT_ITEM_RETURN_ID, (section_id, text, pos, now))
+            return _row_get(cur.fetchone(), "id")
+        cur = c.execute(INSERT_ITEM_RETURN_ID, (section_id, text, pos, now))
+        return cur.lastrowid
+
+
+def todo_item_delete(item_id: int) -> bool:
+    with _conn() as c:
+        cur = c.execute(
+            f"DELETE FROM todo_items WHERE id = {PARAM}", (item_id,)
+        )
+        return (cur.rowcount or 0) > 0
+
+
+def todo_item_move(item_id: int, direction: str) -> bool:
+    item = todo_item_get(item_id)
+    if item is None:
+        return False
+    siblings = todo_items_for_section(item["section_id"])
+    idx = next((i for i, x in enumerate(siblings) if x["id"] == item_id), -1)
+    if idx < 0:
+        return False
+    if direction == "up" and idx == 0:
+        return False
+    if direction == "down" and idx == len(siblings) - 1:
+        return False
+    other_idx = idx - 1 if direction == "up" else idx + 1
+    a, b = siblings[idx], siblings[other_idx]
+    with _conn() as c:
+        c.execute(
+            f"UPDATE todo_items SET position = {PARAM} WHERE id = {PARAM}",
+            (b["position"], a["id"]),
+        )
+        c.execute(
+            f"UPDATE todo_items SET position = {PARAM} WHERE id = {PARAM}",
+            (a["position"], b["id"]),
+        )
+    return True
+
+
+def todo_item_priority(item_id: int, level: str) -> bool:
+    """level='high' → jump to top of section; level='low' → jump to bottom."""
+    item = todo_item_get(item_id)
+    if item is None:
+        return False
+    siblings = todo_items_for_section(item["section_id"])
+    if not siblings:
+        return False
+    if level == "high":
+        new_pos = siblings[0]["position"] - 1
+    elif level == "low":
+        new_pos = siblings[-1]["position"] + 1
+    else:
+        return False
+    with _conn() as c:
+        c.execute(
+            f"UPDATE todo_items SET position = {PARAM} WHERE id = {PARAM}",
+            (new_pos, item_id),
+        )
+    return True
+
+
+def todo_get_state(key: str) -> Optional[str]:
+    with _conn() as c:
+        cur = c.execute(
+            f"SELECT value FROM todo_state WHERE key = {PARAM}", (key,)
+        )
+        row = cur.fetchone()
+    return _row_get(row, "value") if row else None
+
+
+def todo_set_state(key: str, value: str) -> None:
+    with _conn() as c:
+        c.execute(UPSERT_TODO_STATE, (key, value))

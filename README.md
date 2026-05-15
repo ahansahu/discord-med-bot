@@ -37,6 +37,56 @@ The first run creates `med_bot.db` and procedurally generates the 6 sticker PNGs
 | `/month`  | Current month's full sticker chart with stats                |
 | `/chart`  | Alias for `/month`                                           |
 
+## Todo channel (optional)
+
+If `TODO_CHANNEL_ID` is set, the bot owns a single pinned message in that
+channel that holds your todo list. You can mutate it through either slash
+commands or buttons + modals on the pinned message itself — both paths share
+the same storage.
+
+**Setup:** set `TODO_CHANNEL_ID` in `.env` (or Railway env vars) to a channel ID
+the bot can post in. The bot needs `Manage Messages` (to pin) on top of its
+existing permissions. Restart — on first run the bot posts a placeholder
+message and pins it.
+
+**Pinned message format:**
+
+```
+Buy-
+
+Treats for Mu
+Shampoo
+
+Errands-
+
+White pens
+```
+
+One row per section header (`name-`), blank line, then items. Empty sections
+are hidden until you re-add items.
+
+**Buttons on the pinned message:**
+
+- Click an item → marks done (removes it).
+- `➕ Add` → modal: enter item text and an optional section (created if new).
+- `🗂 Sections` → ephemeral menu to rename, reorder, delete, or create sections.
+- `↕ Edit` → enters reorder mode: click an item to select it, then use
+  `⬆ Top / ▲ Up / ▼ Down / ⬇ Bottom` to move it. `✕ Exit` returns to normal.
+- `‹ ›` → pagination when the list exceeds 20 items.
+
+**Slash commands** (everything is also reachable through buttons):
+
+| Command | Description |
+| ------- | ----------- |
+| `/todo add item:<text> section:<name?>` | Add an item. Section is created if it doesn't exist; defaults to the first section. |
+| `/todo done item:<text>` | Mark an item done (autocomplete). |
+| `/todo move item:<text> direction:<up\|down>` | Move an item within its section. |
+| `/todo priority item:<text> level:<high\|low>` | Jump an item to the top / bottom of its section. |
+| `/todo section add name:<name>` | Create a section. |
+| `/todo section remove name:<name>` | Delete a section and its items. |
+| `/todo section rename old:<name> new:<name>` | Rename a section. |
+| `/todo section move name:<name> direction:<up\|down>` | Reorder sections. |
+
 ## Deploy to Railway (24/7, ~$3–5/month)
 
 [Railway](https://railway.app) is the simplest path to a reliable, always-on Discord bot. Auto-deploys on every git push, real persistent storage, no sleep policies. New accounts get a one-time **$5 trial credit** that covers about a month for this bot, then ~$3–5/month after.
@@ -74,6 +124,7 @@ In the project → click the bot service → **Variables** tab → add each:
 | `DISCORD_TOKEN` | your bot token |
 | `GUILD_ID` | your server ID |
 | `CHANNEL_ID` | your reminder channel ID |
+| `TODO_CHANNEL_ID` | (optional — enables the [todo channel](#todo-channel-optional)) |
 | `TARGET_USER_ID` | your Discord user ID |
 | `TIMEZONE` | `Europe/London` |
 | `UPTIMEROBOT_HEARTBEAT_URL` | (optional — see [Mitigations](#mitigations)) |
@@ -192,6 +243,7 @@ bot.py            # discord client, events, slash commands
 scheduler.py      # APScheduler cron jobs + heartbeat / backup / weekly summary
 storage.py        # SQLite log + queries
 chart.py          # Pillow sticker chart + procedural sticker drawing
+todo.py           # pinned todo list: rendering, persistent buttons, modals
 config.py         # env loader
 Procfile          # start command for Railway / nixpacks
 railway.json      # Railway build + deploy config
