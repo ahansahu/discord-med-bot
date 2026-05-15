@@ -66,6 +66,18 @@ if USE_POSTGRES:
         f"INSERT INTO custom_stickers (filename, image) VALUES ({PARAM}, {PARAM}) "
         "ON CONFLICT (filename) DO UPDATE SET image = EXCLUDED.image"
     )
+    SUPABASE_GRANTS = """
+DO $$
+BEGIN
+  ALTER TABLE public.daily_log ENABLE ROW LEVEL SECURITY;
+  ALTER TABLE public.custom_stickers ENABLE ROW LEVEL SECURITY;
+
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
+    GRANT SELECT, INSERT, UPDATE, DELETE ON public.daily_log TO service_role;
+    GRANT SELECT, INSERT, UPDATE, DELETE ON public.custom_stickers TO service_role;
+  END IF;
+END $$;
+"""
 else:
     import sqlite3
 
@@ -114,6 +126,8 @@ def init_db() -> None:
     with _conn() as c:
         c.execute(SCHEMA)
         c.execute(CUSTOM_STICKERS_SCHEMA)
+        if USE_POSTGRES:
+            c.execute(SUPABASE_GRANTS)
 
 
 def today_str() -> str:
