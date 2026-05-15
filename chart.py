@@ -337,7 +337,7 @@ TODAY_INK = (90, 130, 130)
 DAY_FG = (90, 80, 70)
 MISSED_FG = (180, 60, 60)
 PENDING_FG = (140, 130, 120)
-LEGEND_FILL = (255, 255, 255, 60)
+LEGEND_FILL = (255, 255, 255, 50)
 LEGEND_FG = (55, 70, 70)
 CELL_RADIUS = 6
 
@@ -361,10 +361,16 @@ def _draw_legend(draw: ImageDraw.ImageDraw, img: Image.Image,
     pill_x = (image_w - pill_w) // 2
     pill_y = footer_top + (footer_h - pill_h) // 2
 
-    draw.rounded_rectangle(
-        [pill_x, pill_y, pill_x + pill_w, pill_y + pill_h],
-        radius=10, fill=LEGEND_FILL, outline=GRID, width=1,
+    # Draw onto a separate transparent layer so the fill actually blends
+    # with what's underneath — ImageDraw writes literal pixel values, so
+    # a translucent fill directly on `img` would just be replaced and then
+    # lose its alpha during the final convert("RGB").
+    pill_layer = Image.new("RGBA", (pill_w, pill_h), (0, 0, 0, 0))
+    ImageDraw.Draw(pill_layer).rounded_rectangle(
+        [0, 0, pill_w - 1, pill_h - 1],
+        radius=10, fill=LEGEND_FILL,
     )
+    img.alpha_composite(pill_layer, (pill_x, pill_y))
 
     ascent, _ = font.getmetrics()
     text_y = cy - ascent // 2 - 1
