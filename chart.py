@@ -321,23 +321,23 @@ def _draw_legend(draw: ImageDraw.ImageDraw, img: Image.Image,
                  taken: int, missed: int, streak: int,
                  font: ImageFont.ImageFont, pool: list) -> None:
     cy = footer_top + footer_h // 2
-    icon_size = 22
-    gap = 10
-    seg_gap = 36
-    pill_pad_x = 32
+    icon_size = 18
+    gap = 8
+    seg_gap = 22
+    pill_pad_x = 20
 
     streak_text = f"Streak {streak} day{'s' if streak != 1 else ''}"
     labels = [f"Taken {taken}", f"Missed {missed}", streak_text]
     seg_widths = [icon_size + gap + int(draw.textlength(lbl, font=font)) for lbl in labels]
     content_w = sum(seg_widths) + seg_gap * 2
     pill_w = content_w + pill_pad_x * 2
-    pill_h = footer_h - 14
+    pill_h = 40
     pill_x = (image_w - pill_w) // 2
     pill_y = footer_top + (footer_h - pill_h) // 2
 
     draw.rounded_rectangle(
         [pill_x, pill_y, pill_x + pill_w, pill_y + pill_h],
-        radius=12, fill=LEGEND_FILL, outline=GRID, width=1,
+        radius=10, fill=LEGEND_FILL, outline=GRID, width=1,
     )
 
     ascent, _ = font.getmetrics()
@@ -368,16 +368,16 @@ def _draw_legend(draw: ImageDraw.ImageDraw, img: Image.Image,
 
 
 def render_month(year: int, month: int) -> bytes:
-    cell = 110
-    pad = 16
+    cell = 95
+    pad = 44
     cols = 7
     cal = calendar.Calendar(firstweekday=0)  # Monday
     weeks = cal.monthdayscalendar(year, month)
     rows = len(weeks)
 
-    title_h = 70
-    weekday_h = 36
-    footer_h = 64
+    title_h = 76
+    weekday_h = 34
+    footer_h = 76
     width = pad * 2 + cols * cell
     height = pad * 2 + title_h + weekday_h + rows * cell + footer_h
 
@@ -396,10 +396,10 @@ def render_month(year: int, month: int) -> bytes:
             log.warning("could not load decor background %s: %s", BG_PATH, e)
     draw = ImageDraw.Draw(img, "RGBA")
 
-    title_font = _load_font(40, prefer_serif=True)
-    day_label_font = _load_font(20)
-    day_num_font = _load_font(18)
-    footer_font = _load_font(20)
+    title_font = _load_font(36, prefer_serif=True)
+    day_label_font = _load_font(17)
+    day_num_font = _load_font(15)
+    footer_font = _load_font(16)
 
     # title
     title = f"{calendar.month_name[month]} {year}"
