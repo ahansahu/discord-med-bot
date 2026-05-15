@@ -300,10 +300,10 @@ def hydrate_custom_stickers() -> None:
 BG = (250, 247, 240)
 GRID = (210, 200, 180)
 TITLE_FG = (60, 50, 40)
+TITLE_INK = (30, 55, 95)
 DAY_FG = (90, 80, 70)
 MISSED_FG = (180, 60, 60)
 PENDING_FG = (140, 130, 120)
-CELL_FILL = (255, 255, 255, 170)
 LEGEND_FILL = (255, 255, 255, 225)
 LEGEND_FG = (60, 50, 40)
 
@@ -376,7 +376,13 @@ def render_month(year: int, month: int) -> bytes:
     img = Image.new("RGBA", (width, height), BG + (255,))
     if BG_PATH.exists():
         try:
-            bg = Image.open(BG_PATH).convert("RGBA").resize((width, height), Image.LANCZOS)
+            bg = Image.open(BG_PATH).convert("RGBA")
+            scale = max(width / bg.width, height / bg.height)
+            sw, sh = int(bg.width * scale), int(bg.height * scale)
+            bg = bg.resize((sw, sh), Image.LANCZOS)
+            ox = (sw - width) // 2
+            oy = (sh - height) // 2
+            bg = bg.crop((ox, oy, ox + width, oy + height))
             img.paste(bg, (0, 0), bg)
         except Exception as e:
             log.warning("could not load decor background %s: %s", BG_PATH, e)
@@ -390,7 +396,7 @@ def render_month(year: int, month: int) -> bytes:
     # title
     title = f"{calendar.month_name[month]} {year}"
     tw = draw.textlength(title, font=title_font)
-    draw.text(((width - tw) // 2, pad + 6), title, fill=TITLE_FG, font=title_font)
+    draw.text(((width - tw) // 2, pad + 6), title, fill=TITLE_INK, font=title_font)
 
     # weekday labels
     labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
@@ -415,10 +421,8 @@ def render_month(year: int, month: int) -> bytes:
             x0 = pad + c * cell
             y0 = grid_y0 + r * cell
             if day == 0:
-                draw.rectangle([x0, y0, x0 + cell, y0 + cell], outline=GRID, width=1)
                 continue
-            draw.rectangle([x0, y0, x0 + cell, y0 + cell],
-                           fill=CELL_FILL, outline=GRID, width=1)
+            draw.rectangle([x0, y0, x0 + cell, y0 + cell], outline=GRID, width=1)
             d = date(year, month, day)
             draw.text((x0 + 6, y0 + 4), str(day), fill=DAY_FG, font=day_num_font)
             row = logs.get(d.isoformat())
