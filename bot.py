@@ -16,10 +16,12 @@ from config import (
     REMINDER_HOURS,
     STICKER_DIR,
     TARGET_USER_ID,
+    TODO_CHANNEL_ID,
     TZ,
 )
 import chart
 import storage
+import todo
 from scheduler import setup_scheduler
 
 
@@ -134,6 +136,7 @@ async def _do_mark_taken(channel: discord.abc.Messageable) -> bool:
 async def on_ready() -> None:
     log.info("logged in as %s (id=%s)", bot.user, bot.user.id if bot.user else "?")
     storage.init_db()
+    todo.register(bot)
     try:
         guild = discord.Object(id=GUILD_ID)
         bot.tree.copy_global_to(guild=guild)
@@ -143,6 +146,13 @@ async def on_ready() -> None:
         log.warning("guild sync failed, falling back to global: %s", e)
         synced = await bot.tree.sync()
         log.info("synced %d global commands", len(synced))
+
+    if TODO_CHANNEL_ID is not None:
+        try:
+            await todo.ensure_pinned(bot)
+            log.info("todo pinned message ready")
+        except Exception as e:
+            log.warning("todo setup failed: %s", e)
 
     if not getattr(bot, "_scheduler_started", False):
         bot._scheduler = setup_scheduler(bot)
