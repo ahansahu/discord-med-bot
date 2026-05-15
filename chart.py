@@ -337,7 +337,7 @@ TODAY_INK = (90, 130, 130)
 DAY_FG = (90, 80, 70)
 MISSED_FG = (180, 60, 60)
 PENDING_FG = (140, 130, 120)
-LEGEND_FILL = (255, 255, 255, 225)
+LEGEND_FILL = (255, 255, 255, 60)
 LEGEND_FG = (55, 70, 70)
 CELL_RADIUS = 6
 
@@ -518,9 +518,11 @@ def render_week_strip(end_day: Optional[date] = None) -> bytes:
     cols = 7
     title_h = 76
     weekday_h = 34
+    legend_gap = 14
     footer_h = 76
+    bottom_pad = 255
     width = pad * 2 + cols * cell
-    height = pad * 2 + title_h + weekday_h + cell + footer_h
+    height = pad + title_h + weekday_h + cell + legend_gap + footer_h + bottom_pad
 
     img = Image.new("RGBA", (width, height), BG + (255,))
     if BG_PATH_WEEK.exists():
@@ -589,7 +591,8 @@ def render_week_strip(end_day: Optional[date] = None) -> bytes:
 
     cnt = storage.counts(start_day, end_day)
     streak = storage.current_streak()
-    _draw_legend(draw, img, width, height - footer_h, footer_h,
+    legend_top = pad + title_h + weekday_h + cell + legend_gap
+    _draw_legend(draw, img, width, legend_top, footer_h,
                  cnt["taken"], cnt["missed"], streak, footer_font, pool)
 
     out = io.BytesIO()
