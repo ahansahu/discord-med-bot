@@ -399,11 +399,15 @@ def _draw_streak_icon(draw: ImageDraw.ImageDraw, img: Image.Image,
     emoji_font = _load_emoji_font()
     if emoji_font is not None:
         # Noto Color Emoji only renders at its native CBDT size, so draw the
-        # glyph onto a scratch canvas at 109px and resize down to icon_size.
-        scratch = Image.new("RGBA", (EMOJI_FONT_NATIVE_SIZE, EMOJI_FONT_NATIVE_SIZE), (0, 0, 0, 0))
+        # glyph onto an oversized scratch canvas (with padding so the sun's
+        # outer rays don't get clipped) and resize down to icon_size.
+        scratch_pad = EMOJI_FONT_NATIVE_SIZE // 2
+        scratch_size = EMOJI_FONT_NATIVE_SIZE + scratch_pad * 2
+        scratch = Image.new("RGBA", (scratch_size, scratch_size), (0, 0, 0, 0))
         s_draw = ImageDraw.Draw(scratch)
         try:
-            s_draw.text((0, 0), "☀", font=emoji_font, embedded_color=True)
+            s_draw.text((scratch_pad, scratch_pad), "☀",
+                        font=emoji_font, embedded_color=True)
         except (TypeError, ValueError):
             scratch = None
         if scratch is not None:
