@@ -19,10 +19,32 @@ STICKER_SIZE = 96
 STICKER_COUNT = 6
 CUSTOM_PREFIX = "custom_"
 
+ASSETS_DIR = Path(__file__).parent / "assets"
+DECOR_DIR = ASSETS_DIR / "decor"
+FONT_DIR = ASSETS_DIR / "fonts"
+BG_PATH = DECOR_DIR / "background.png"
+SERIF_FONT_CANDIDATES = [
+    (FONT_DIR / "Fraunces-VF.ttf", "SemiBold"),
+    (FONT_DIR / "PlayfairDisplay-VF.ttf", "Bold"),
+]
+
 
 # ---------- font loading ----------
 
-def _load_font(size: int) -> ImageFont.ImageFont:
+def _load_font(size: int, prefer_serif: bool = False) -> ImageFont.ImageFont:
+    if prefer_serif:
+        for path, instance in SERIF_FONT_CANDIDATES:
+            if not path.exists():
+                continue
+            try:
+                font = ImageFont.truetype(str(path), size)
+                try:
+                    font.set_variation_by_name(instance)
+                except (OSError, AttributeError):
+                    pass
+                return font
+            except (OSError, IOError):
+                continue
     candidates = [
         "DejaVuSans-Bold.ttf",
         "DejaVuSans.ttf",
@@ -284,37 +306,105 @@ def hydrate_custom_stickers() -> None:
 BG = (250, 247, 240)
 GRID = (210, 200, 180)
 TITLE_FG = (60, 50, 40)
+TITLE_INK = (45, 75, 75)
+TODAY_INK = (90, 130, 130)
 DAY_FG = (90, 80, 70)
 MISSED_FG = (180, 60, 60)
 PENDING_FG = (140, 130, 120)
+LEGEND_FILL = (255, 255, 255, 225)
+LEGEND_FG = (55, 70, 70)
+CELL_RADIUS = 6
+
+
+def _draw_legend(draw: ImageDraw.ImageDraw, img: Image.Image,
+                 image_w: int, footer_top: int, footer_h: int,
+                 taken: int, missed: int, streak: int,
+                 font: ImageFont.ImageFont, pool: list) -> None:
+    cy = footer_top + footer_h // 2
+    icon_size = 18
+    gap = 8
+    seg_gap = 22
+    pill_pad_x = 20
+
+    streak_text = f"Streak {streak} day{'s' if streak != 1 else ''}"
+    labels = [f"Taken {taken}", f"Missed {missed}", streak_text]
+    seg_widths = [icon_size + gap + int(draw.textlength(lbl, font=font)) for lbl in labels]
+    content_w = sum(seg_widths) + seg_gap * 2
+    pill_w = content_w + pill_pad_x * 2
+    pill_h = 40
+    pill_x = (image_w - pill_w) // 2
+    pill_y = footer_top + (footer_h - pill_h) // 2
+
+    draw.rounded_rectangle(
+        [pill_x, pill_y, pill_x + pill_w, pill_y + pill_h],
+        radius=10, fill=LEGEND_FILL, outline=GRID, width=1,
+    )
+
+    ascent, _ = font.getmetrics()
+    text_y = cy - ascent // 2 - 1
+    start_x = pill_x + pill_pad_x
+
+    sx = start_x
+    sticker = _load_sticker(1, icon_size, pool)
+    img.paste(sticker, (sx, cy - icon_size // 2), sticker)
+    draw.text((sx + icon_size + gap, text_y), labels[0], fill=LEGEND_FG, font=font)
+
+    sx = start_x + seg_widths[0] + seg_gap
+    xr = icon_size // 2 - 3
+    xcx = sx + icon_size // 2
+    draw.line([(xcx - xr, cy - xr), (xcx + xr, cy + xr)], fill=MISSED_FG, width=4)
+    draw.line([(xcx - xr, cy + xr), (xcx + xr, cy - xr)], fill=MISSED_FG, width=4)
+    draw.text((sx + icon_size + gap, text_y), labels[1], fill=LEGEND_FG, font=font)
+
+    sx = start_x + seg_widths[0] + seg_widths[1] + seg_gap * 2
+    box_size = icon_size - 4
+    bx = sx + (icon_size - box_size) // 2
+    by = cy - box_size // 2
+    draw.rounded_rectangle(
+        [bx, by, bx + box_size, by + box_size],
+        radius=4, outline=PENDING_FG, width=2,
+    )
+    draw.text((sx + icon_size + gap, text_y), labels[2], fill=LEGEND_FG, font=font)
 
 
 def render_month(year: int, month: int) -> bytes:
-    cell = 110
-    pad = 16
+    cell = 95
+    pad = 44
     cols = 7
     cal = calendar.Calendar(firstweekday=0)  # Monday
     weeks = cal.monthdayscalendar(year, month)
     rows = len(weeks)
 
-    title_h = 70
-    weekday_h = 36
-    footer_h = 50
+    title_h = 76
+    weekday_h = 34
+    footer_h = 76
     width = pad * 2 + cols * cell
     height = pad * 2 + title_h + weekday_h + rows * cell + footer_h
 
-    img = Image.new("RGB", (width, height), BG)
-    draw = ImageDraw.Draw(img)
+    img = Image.new("RGBA", (width, height), BG + (255,))
+    if BG_PATH.exists():
+        try:
+            bg = Image.open(BG_PATH).convert("RGBA")
+            scale = max(width / bg.width, height / bg.height)
+            sw, sh = int(bg.width * scale), int(bg.height * scale)
+            bg = bg.resize((sw, sh), Image.LANCZOS)
+            ox = (sw - width) // 2
+            oy = (sh - height) // 2
+            bg = bg.crop((ox, oy, ox + width, oy + height))
+            img.paste(bg, (0, 0), bg)
+        except Exception as e:
+            log.warning("could not load decor background %s: %s", BG_PATH, e)
+    draw = ImageDraw.Draw(img, "RGBA")
 
-    title_font = _load_font(38)
-    day_label_font = _load_font(20)
-    day_num_font = _load_font(18)
-    footer_font = _load_font(20)
+    title_font = _load_font(36, prefer_serif=True)
+    day_label_font = _load_font(17)
+    day_num_font = _load_font(15)
+    footer_font = _load_font(16)
 
     # title
     title = f"{calendar.month_name[month]} {year}"
     tw = draw.textlength(title, font=title_font)
-    draw.text(((width - tw) // 2, pad + 6), title, fill=TITLE_FG, font=title_font)
+    draw.text(((width - tw) // 2, pad + 6), title, fill=TITLE_INK, font=title_font)
 
     # weekday labels
     labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
@@ -338,11 +428,12 @@ def render_month(year: int, month: int) -> bytes:
         for c, day in enumerate(week):
             x0 = pad + c * cell
             y0 = grid_y0 + r * cell
-            draw.rectangle([x0, y0, x0 + cell, y0 + cell], outline=GRID, width=1)
             if day == 0:
                 continue
+            draw.rounded_rectangle([x0, y0, x0 + cell, y0 + cell],
+                                   radius=CELL_RADIUS, outline=GRID, width=1)
             d = date(year, month, day)
-            draw.text((x0 + 6, y0 + 4), str(day), fill=DAY_FG, font=day_num_font)
+            draw.text((x0 + 8, y0 + 5), str(day), fill=DAY_FG, font=day_num_font)
             row = logs.get(d.isoformat())
             cx = x0 + cell // 2
             cy = y0 + cell // 2 + 6
@@ -359,18 +450,18 @@ def render_month(year: int, month: int) -> bytes:
                 draw.ellipse([cx - rr, cy - rr, cx + rr, cy + rr],
                              outline=PENDING_FG, width=4)
             elif d == today:
-                draw.rectangle([x0 + 2, y0 + 2, x0 + cell - 2, y0 + cell - 2],
-                               outline=(120, 144, 156), width=3)
+                draw.rounded_rectangle([x0 + 2, y0 + 2, x0 + cell - 2, y0 + cell - 2],
+                                       radius=max(CELL_RADIUS - 2, 2),
+                                       outline=TODAY_INK, width=3)
 
     # footer
     cnt = storage.counts(start, end)
     streak = storage.current_streak()
-    footer = f"Taken {cnt['taken']}  ·  Missed {cnt['missed']}  ·  Streak {streak} day{'s' if streak != 1 else ''}"
-    fw = draw.textlength(footer, font=footer_font)
-    draw.text(((width - fw) // 2, height - footer_h + 12), footer, fill=TITLE_FG, font=footer_font)
+    _draw_legend(draw, img, width, height - footer_h, footer_h,
+                 cnt["taken"], cnt["missed"], streak, footer_font, pool)
 
     out = io.BytesIO()
-    img.save(out, "PNG")
+    img.convert("RGB").save(out, "PNG")
     return out.getvalue()
 
 
