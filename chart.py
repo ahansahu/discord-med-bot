@@ -175,12 +175,13 @@ def random_sticker_index() -> int:
     return random.randrange(len(_sticker_pool()))
 
 
-def _load_sticker(index: int, size: int) -> Image.Image:
+def _load_sticker(index: int, size: int, pool: list[Path] | None = None) -> Image.Image:
     # Stable fallback to built-in sticker_0 when the original index points past
     # the current pool — keeps historical chart cells from re-shuffling when a
     # custom sticker is removed.
-    paths = _sticker_pool()
-    path = paths[index] if 0 <= index < len(paths) else paths[0]
+    if pool is None:
+        pool = _sticker_pool()
+    path = pool[index] if 0 <= index < len(pool) else pool[0]
     img = Image.open(path).convert("RGBA")
     if img.size != (size, size):
         img = img.resize((size, size), Image.LANCZOS)
@@ -326,6 +327,7 @@ def render_month(year: int, month: int) -> bytes:
     logs = storage.status_map(start, end)
 
     sticker_size = cell - 22
+    pool = _sticker_pool()
 
     for r, week in enumerate(weeks):
         for c, day in enumerate(week):
@@ -335,14 +337,13 @@ def render_month(year: int, month: int) -> bytes:
             if day == 0:
                 continue
             d = date(year, month, day)
-            # day number
             draw.text((x0 + 6, y0 + 4), str(day), fill=DAY_FG, font=day_num_font)
             row = logs.get(d.isoformat())
             cx = x0 + cell // 2
             cy = y0 + cell // 2 + 6
             if row and row["status"] == "taken":
                 idx = row["sticker_index"] if row["sticker_index"] is not None else 0
-                sticker = _load_sticker(int(idx), sticker_size)
+                sticker = _load_sticker(int(idx), sticker_size, pool)
                 img.paste(sticker, (cx - sticker_size // 2, cy - sticker_size // 2), sticker)
             elif row and row["status"] == "missed":
                 rr = sticker_size // 3
@@ -394,16 +395,15 @@ def render_week_strip(end_day: Optional[date] = None) -> bytes:
 
     logs = storage.status_map(start_day, end_day)
     sticker_size = cell - 24
+    pool = _sticker_pool()
 
     for i in range(7):
         d = start_day + timedelta(days=i)
         x0 = pad + i * cell
         y0 = pad + title_h
-        # label
         lbl = d.strftime("%a %d")
         lw = draw.textlength(lbl, font=label_font)
         draw.text((x0 + (cell - lw) // 2, y0 + 4), lbl, fill=DAY_FG, font=label_font)
-        # cell
         cy0 = y0 + label_h
         draw.rectangle([x0, cy0, x0 + cell, cy0 + cell], outline=GRID, width=1)
         cx = x0 + cell // 2
@@ -411,7 +411,7 @@ def render_week_strip(end_day: Optional[date] = None) -> bytes:
         row = logs.get(d.isoformat())
         if row and row["status"] == "taken":
             idx = row["sticker_index"] if row["sticker_index"] is not None else 0
-            sticker = _load_sticker(int(idx), sticker_size)
+            sticker = _load_sticker(int(idx), sticker_size, pool)
             img.paste(sticker, (cx - sticker_size // 2, cy - sticker_size // 2), sticker)
         elif row and row["status"] == "missed":
             rr = sticker_size // 3

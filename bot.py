@@ -45,9 +45,8 @@ _import_prompts: dict[int, datetime] = {}
 
 
 def _register_import_prompt(message_id: int) -> None:
-    expiry = datetime.now(timezone.utc) + timedelta(seconds=IMPORT_TTL_SECONDS)
-    _import_prompts[message_id] = expiry
     now = datetime.now(timezone.utc)
+    _import_prompts[message_id] = now + timedelta(seconds=IMPORT_TTL_SECONDS)
     for mid in [m for m, exp in _import_prompts.items() if exp < now]:
         _import_prompts.pop(mid, None)
 
@@ -87,17 +86,14 @@ async def _confirm(channel: discord.abc.Messageable, *, already: bool = False) -
         await channel.send("✅ logged! nice one.")
 
 
-async def _edit_reminder_to_logged(
-    bot_client: discord.Client, med_day: str
-) -> None:
-    """Edit the original reminder message to reflect the logged state."""
+async def _edit_reminder_to_logged(med_day: str) -> None:
     msg_id = storage.get_reminder_msg_id(med_day)
     if msg_id is None:
         return
-    channel = bot_client.get_channel(CHANNEL_ID)
+    channel = bot.get_channel(CHANNEL_ID)
     if channel is None:
         try:
-            channel = await bot_client.fetch_channel(CHANNEL_ID)
+            channel = await bot.fetch_channel(CHANNEL_ID)
         except discord.HTTPException as e:
             log.warning("could not fetch channel for reminder edit: %s", e)
             return
@@ -111,24 +107,23 @@ async def _edit_reminder_to_logged(
         log.warning("could not edit reminder message %s: %s", msg_id, e)
 
 
-async def _do_mark_taken(
-    channel: discord.abc.Messageable, bot_client: discord.Client
-) -> bool:
+async def _do_mark_taken(channel: discord.abc.Messageable) -> bool:
     med_day = storage.medication_day_str()
-    if not storage.is_pending(med_day):
-        row = storage.get_status(med_day)
-        if row is None:
-            await channel.send("no active reminder right now — nothing to log.")
-        elif row["status"] == "taken":
-            await _confirm(channel, already=True)
-        else:
-            await channel.send("that reminder already expired (marked missed).")
+    row = storage.get_status(med_day)
+    if row is None:
+        await channel.send("no active reminder right now — nothing to log.")
+        return False
+    if row["status"] == "taken":
+        await _confirm(channel, already=True)
+        return False
+    if row["status"] == "missed":
+        await channel.send("that reminder already expired (marked missed).")
         return False
     sticker_idx = chart.random_sticker_index()
     newly = storage.mark_taken(med_day, sticker_idx)
     await _confirm(channel, already=not newly)
     if newly:
-        await _edit_reminder_to_logged(bot_client, med_day)
+        await _edit_reminder_to_logged(med_day)
     return newly
 
 
@@ -160,16 +155,11 @@ async def on_ready() -> None:
 async def on_message(message: discord.Message) -> None:
     if message.author.bot:
         return
-    if message.channel.id != CHANNEL_ID:
-        await bot.process_commands(message)
-        return
-    if not _is_target(message.author.id):
-        await bot.process_commands(message)
-        return
-    if message.stickers and message.reference and \
-            _is_active_import_prompt(message.reference.message_id):
-        await _import_stickers(message)
-        return
+    if message.channel.id == CHANNEL_ID and _is_target(message.author.id):
+        if message.stickers and message.reference and \
+                _is_active_import_prompt(message.reference.message_id):
+            await _import_stickers(message)
+            return
     await bot.process_commands(message)
 
 
@@ -190,7 +180,7 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent) -> None:
     if expected is None or payload.message_id != expected:
         return
     channel = bot.get_channel(payload.channel_id) or await bot.fetch_channel(payload.channel_id)
-    await _do_mark_taken(channel, bot)
+    await _do_mark_taken(channel)
 
 
 # ---------- slash commands ----------
@@ -216,7 +206,7 @@ async def cmd_taken(interaction: discord.Interaction) -> None:
         "✅ logged! nice one." if newly else "👌 already logged for today."
     )
     if newly:
-        await _edit_reminder_to_logged(bot, med_day)
+        await _edit_reminder_to_logged(med_day)
 
 
 def _next_reminder_str() -> str:
@@ -231,7 +221,7 @@ def _next_reminder_str() -> str:
 async def cmd_status(interaction: discord.Interaction) -> None:
     if await _wrong_channel(interaction):
         return
-    today = storage.today_str()
+    today = storage.medication_day_str()
     row = storage.get_status(today)
     if row is None:
         msg = f"no entry for today yet — next reminder at {_next_reminder_str()}."

@@ -210,13 +210,13 @@ def status_map(start: date, end: date) -> dict:
 def current_streak() -> int:
     """Consecutive 'taken' days ending yesterday or today."""
     today = datetime.now(TZ).date()
-    streak = 0
+    logs = status_map(today - timedelta(days=365), today)
     cursor = today
-    today_row = get_status(today.isoformat())
-    if today_row is None or _row_get(today_row, "status") != "taken":
+    if _row_get(logs.get(today.isoformat()), "status") != "taken":
         cursor = today - timedelta(days=1)
+    streak = 0
     while True:
-        row = get_status(cursor.isoformat())
+        row = logs.get(cursor.isoformat())
         if row and _row_get(row, "status") == "taken":
             streak += 1
             cursor -= timedelta(days=1)
