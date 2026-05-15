@@ -301,3 +301,23 @@ def list_sticker_blobs() -> list[tuple[str, bytes]]:
         )
         rows = cur.fetchall()
     return [(_row_get(r, "filename"), bytes(_row_get(r, "image"))) for r in rows]
+
+
+def get_taken_builtin_dates(builtin_count: int) -> list[str]:
+    """Return dates of all 'taken' rows with a built-in sticker index (< builtin_count)."""
+    with _conn() as c:
+        cur = c.execute(
+            f"SELECT date FROM daily_log "
+            f"WHERE status = 'taken' AND (sticker_index IS NULL OR sticker_index < {PARAM})",
+            (builtin_count,),
+        )
+        rows = cur.fetchall()
+    return [_row_get(r, "date") for r in rows]
+
+
+def update_sticker_index(d: str, sticker_index: int) -> None:
+    with _conn() as c:
+        c.execute(
+            f"UPDATE daily_log SET sticker_index = {PARAM} WHERE date = {PARAM}",
+            (sticker_index, d),
+        )
