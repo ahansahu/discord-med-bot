@@ -23,10 +23,19 @@ ASSETS_DIR = Path(__file__).parent / "assets"
 DECOR_DIR = ASSETS_DIR / "decor"
 FONT_DIR = ASSETS_DIR / "fonts"
 BG_PATH = DECOR_DIR / "background.png"
+BG_PATH_WEEK = DECOR_DIR / "background_week.png"
 SERIF_FONT_CANDIDATES = [
     (FONT_DIR / "Fraunces-VF.ttf", "SemiBold"),
     (FONT_DIR / "PlayfairDisplay-VF.ttf", "Bold"),
 ]
+EMOJI_FONT_CANDIDATES = [
+    "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+    "/System/Library/Fonts/Apple Color Emoji.ttc",
+    "C:/Windows/Fonts/seguiemj.ttf",
+]
+# Noto Color Emoji ships a single CBDT strike at 109px; Pillow can scale it
+# down only when loaded at that native size.
+EMOJI_FONT_NATIVE_SIZE = 109
 
 
 # ---------- font loading ----------
@@ -60,6 +69,15 @@ def _load_font(size: int, prefer_serif: bool = False) -> ImageFont.ImageFont:
         except (OSError, IOError):
             continue
     return ImageFont.load_default()
+
+
+def _load_emoji_font() -> Optional[ImageFont.ImageFont]:
+    for path in EMOJI_FONT_CANDIDATES:
+        try:
+            return ImageFont.truetype(path, EMOJI_FONT_NATIVE_SIZE)
+        except (OSError, IOError):
+            continue
+    return None
 
 
 # ---------- procedural sticker drawing ----------
@@ -191,6 +209,14 @@ def _sticker_pool() -> list[Path]:
         p for p in STICKER_DIR.glob(f"{CUSTOM_PREFIX}*.png") if p.is_file()
     )
     return builtin + customs
+
+
+def _legend_taken_sticker_index(pool: list[Path]) -> int:
+    # Prefer a custom sticker so the legend matches what the user actually
+    # sees on the chart when they've uploaded their own stickers.
+    if len(pool) > STICKER_COUNT:
+        return STICKER_COUNT
+    return 1
 
 
 def random_sticker_index() -> int:
@@ -345,7 +371,7 @@ def _draw_legend(draw: ImageDraw.ImageDraw, img: Image.Image,
     start_x = pill_x + pill_pad_x
 
     sx = start_x
-    sticker = _load_sticker(1, icon_size, pool)
+    sticker = _load_sticker(_legend_taken_sticker_index(pool), icon_size, pool)
     img.paste(sticker, (sx, cy - icon_size // 2), sticker)
     draw.text((sx + icon_size + gap, text_y), labels[0], fill=LEGEND_FG, font=font)
 
@@ -357,14 +383,31 @@ def _draw_legend(draw: ImageDraw.ImageDraw, img: Image.Image,
     draw.text((sx + icon_size + gap, text_y), labels[1], fill=LEGEND_FG, font=font)
 
     sx = start_x + seg_widths[0] + seg_widths[1] + seg_gap * 2
-    box_size = icon_size - 4
-    bx = sx + (icon_size - box_size) // 2
-    by = cy - box_size // 2
-    draw.rounded_rectangle(
-        [bx, by, bx + box_size, by + box_size],
-        radius=4, outline=PENDING_FG, width=2,
-    )
+    _draw_streak_icon(draw, img, sx, cy, icon_size, pool)
     draw.text((sx + icon_size + gap, text_y), labels[2], fill=LEGEND_FG, font=font)
+
+
+def _draw_streak_icon(draw: ImageDraw.ImageDraw, img: Image.Image,
+                      sx: int, cy: int, icon_size: int, pool: list) -> None:
+    emoji_font = _load_emoji_font()
+    if emoji_font is not None:
+        # Noto Color Emoji only renders at its native CBDT size, so draw the
+        # glyph onto a scratch canvas at 109px and resize down to icon_size.
+        scratch = Image.new("RGBA", (EMOJI_FONT_NATIVE_SIZE, EMOJI_FONT_NATIVE_SIZE), (0, 0, 0, 0))
+        s_draw = ImageDraw.Draw(scratch)
+        try:
+            s_draw.text((0, 0), "☀", font=emoji_font, embedded_color=True)
+        except (TypeError, ValueError):
+            scratch = None
+        if scratch is not None:
+            bbox = scratch.getbbox()
+            if bbox is not None:
+                cropped = scratch.crop(bbox)
+                cropped = cropped.resize((icon_size, icon_size), Image.LANCZOS)
+                img.paste(cropped, (sx, cy - icon_size // 2), cropped)
+                return
+    sun = _load_sticker(3, icon_size, pool)
+    img.paste(sun, (sx, cy - icon_size // 2), sun)
 
 
 def render_month(year: int, month: int) -> bytes:
@@ -471,59 +514,84 @@ def render_week_strip(end_day: Optional[date] = None) -> bytes:
     start_day = end_day - timedelta(days=6)
 
     cell = 120
-    pad = 16
-    label_h = 32
-    title_h = 56
-    footer_h = 44
-    width = pad * 2 + 7 * cell
-    height = pad * 2 + title_h + label_h + cell + footer_h
+    pad = 44
+    cols = 7
+    title_h = 76
+    weekday_h = 34
+    footer_h = 76
+    width = pad * 2 + cols * cell
+    height = pad * 2 + title_h + weekday_h + cell + footer_h
 
-    img = Image.new("RGB", (width, height), BG)
-    draw = ImageDraw.Draw(img)
+    img = Image.new("RGBA", (width, height), BG + (255,))
+    if BG_PATH_WEEK.exists():
+        try:
+            bg = Image.open(BG_PATH_WEEK).convert("RGBA")
+            scale = max(width / bg.width, height / bg.height)
+            sw, sh = int(bg.width * scale), int(bg.height * scale)
+            bg = bg.resize((sw, sh), Image.LANCZOS)
+            ox = (sw - width) // 2
+            oy = (sh - height) // 2
+            bg = bg.crop((ox, oy, ox + width, oy + height))
+            img.paste(bg, (0, 0), bg)
+        except Exception as e:
+            log.warning("could not load decor background %s: %s", BG_PATH_WEEK, e)
+    draw = ImageDraw.Draw(img, "RGBA")
 
-    title_font = _load_font(28)
-    label_font = _load_font(18)
-    footer_font = _load_font(18)
+    title_font = _load_font(36, prefer_serif=True)
+    day_label_font = _load_font(17)
+    day_num_font = _load_font(15)
+    footer_font = _load_font(16)
 
     title = "Last 7 days"
     tw = draw.textlength(title, font=title_font)
-    draw.text(((width - tw) // 2, pad + 6), title, fill=TITLE_FG, font=title_font)
+    draw.text(((width - tw) // 2, pad + 6), title, fill=TITLE_INK, font=title_font)
 
+    label_y = pad + title_h
+    labels = [(start_day + timedelta(days=i)).strftime("%a") for i in range(cols)]
+    for i, lbl in enumerate(labels):
+        x = pad + i * cell
+        lw = draw.textlength(lbl, font=day_label_font)
+        draw.text((x + (cell - lw) // 2, label_y + 6), lbl, fill=DAY_FG, font=day_label_font)
+
+    grid_y0 = pad + title_h + weekday_h
+    today = datetime.now(TZ).date()
     logs = storage.status_map(start_day, end_day)
-    sticker_size = cell - 24
+
+    sticker_size = cell - 22
     pool = _sticker_pool()
 
-    for i in range(7):
+    for i in range(cols):
         d = start_day + timedelta(days=i)
         x0 = pad + i * cell
-        y0 = pad + title_h
-        lbl = d.strftime("%a %d")
-        lw = draw.textlength(lbl, font=label_font)
-        draw.text((x0 + (cell - lw) // 2, y0 + 4), lbl, fill=DAY_FG, font=label_font)
-        cy0 = y0 + label_h
-        draw.rectangle([x0, cy0, x0 + cell, cy0 + cell], outline=GRID, width=1)
-        cx = x0 + cell // 2
-        cy = cy0 + cell // 2
+        y0 = grid_y0
+        draw.rounded_rectangle([x0, y0, x0 + cell, y0 + cell],
+                               radius=CELL_RADIUS, outline=GRID, width=1)
+        draw.text((x0 + 8, y0 + 5), str(d.day), fill=DAY_FG, font=day_num_font)
         row = logs.get(d.isoformat())
+        cx = x0 + cell // 2
+        cy = y0 + cell // 2 + 6
         if row and row["status"] == "taken":
             idx = row["sticker_index"] if row["sticker_index"] is not None else 0
             sticker = _load_sticker(int(idx), sticker_size, pool)
             img.paste(sticker, (cx - sticker_size // 2, cy - sticker_size // 2), sticker)
         elif row and row["status"] == "missed":
             rr = sticker_size // 3
-            draw.line([(cx - rr, cy - rr), (cx + rr, cy + rr)], fill=MISSED_FG, width=6)
-            draw.line([(cx - rr, cy + rr), (cx + rr, cy - rr)], fill=MISSED_FG, width=6)
+            draw.line([(cx - rr, cy - rr), (cx + rr, cy + rr)], fill=MISSED_FG, width=5)
+            draw.line([(cx - rr, cy + rr), (cx + rr, cy - rr)], fill=MISSED_FG, width=5)
         elif row and row["status"] == "pending":
             rr = sticker_size // 3
             draw.ellipse([cx - rr, cy - rr, cx + rr, cy + rr],
                          outline=PENDING_FG, width=4)
+        elif d == today:
+            draw.rounded_rectangle([x0 + 2, y0 + 2, x0 + cell - 2, y0 + cell - 2],
+                                   radius=max(CELL_RADIUS - 2, 2),
+                                   outline=TODAY_INK, width=3)
 
     cnt = storage.counts(start_day, end_day)
     streak = storage.current_streak()
-    footer = f"Taken {cnt['taken']} / 7  ·  Streak {streak}"
-    fw = draw.textlength(footer, font=footer_font)
-    draw.text(((width - fw) // 2, height - footer_h + 10), footer, fill=TITLE_FG, font=footer_font)
+    _draw_legend(draw, img, width, height - footer_h, footer_h,
+                 cnt["taken"], cnt["missed"], streak, footer_font, pool)
 
     out = io.BytesIO()
-    img.save(out, "PNG")
+    img.convert("RGB").save(out, "PNG")
     return out.getvalue()
