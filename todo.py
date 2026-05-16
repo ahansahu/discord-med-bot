@@ -14,12 +14,16 @@ import storage
 
 log = logging.getLogger("med_bot.todo")
 
-PAGE_SIZE = 20
+PAGE_SIZE = 25
 SECTIONS_PER_PAGE = 4
 ITEM_LABEL_MAX = 80
+FIELD_VALUE_MAX = 1024
 EMPTY_PLACEHOLDER = "_(empty)_"
 DEFAULT_SECTION = "Buy"
 PINNED_STATE_KEY = "pinned_msg_id"
+EMBED_COLOR = discord.Color.from_str("#F4B6C2")
+ITEM_BULLET = "☐"
+SELECTED_BULLET = "➤ ☐"
 
 _ui_state = {"page": 0, "mode": "normal", "selected_item_id": None}
 
@@ -75,18 +79,58 @@ def _clamp_state(items: list[dict]) -> None:
         _ui_state["selected_item_id"] = None
 
 
-def render_text(sections: list[dict], page: int, total_pages: int) -> str:
-    blocks: list[str] = []
+def _format_item(text: str, selected: bool) -> str:
+    glyph = SELECTED_BULLET if selected else ITEM_BULLET
+    return f"{glyph} {text}"
+
+
+def _split_field_value(lines: list[str]) -> list[str]:
+    """Pack lines into chunks each <= FIELD_VALUE_MAX chars (joined by \\n)."""
+    chunks: list[str] = []
+    buf: list[str] = []
+    buf_len = 0
+    for line in lines:
+        added = len(line) + (1 if buf else 0)
+        if buf and buf_len + added > FIELD_VALUE_MAX:
+            chunks.append("\n".join(buf))
+            buf = [line]
+            buf_len = len(line)
+        else:
+            buf.append(line)
+            buf_len += added
+    if buf:
+        chunks.append("\n".join(buf))
+    return chunks
+
+
+def render_embed(
+    sections: list[dict],
+    on_page_ids: set[int],
+    page: int,
+    total_pages: int,
+) -> discord.Embed:
+    mode = _ui_state["mode"]
+    selected_id = _ui_state["selected_item_id"]
+    embed = discord.Embed(title="🌸 To-Do", color=EMBED_COLOR)
+    any_items = False
     for sec in sections:
-        items = sec.get("items", [])
-        if not items:
+        sec_items = [it for it in sec.get("items", []) if it["id"] in on_page_ids]
+        if not sec_items:
             continue
-        body = "\n".join(it["text"] for it in items)
-        blocks.append(f"{sec['name']}-\n\n{body}")
-    text = "\n\n".join(blocks) if blocks else EMPTY_PLACEHOLDER
+        any_items = True
+        lines = [
+            _format_item(it["text"], mode == "edit" and it["id"] == selected_id)
+            for it in sec_items
+        ]
+        chunks = _split_field_value(lines)
+        for idx, chunk in enumerate(chunks):
+            name = sec["name"] if idx == 0 else f"{sec['name']} (cont.)"
+            embed.add_field(name=name, value=chunk, inline=False)
+    if not any_items:
+        embed.description = EMPTY_PLACEHOLDER
     if total_pages > 1:
-        text += f"\n\n_Page {page + 1}/{total_pages}_"
-    return text
+        embed.set_footer(text=f"Page {page + 1}/{total_pages}")
+    return embed
 
 
 # --- pinned message lifecycle ---------------------------------------------
@@ -122,16 +166,19 @@ async def ensure_pinned(bot: commands.Bot) -> Optional[discord.Message]:
     sections, items = _build_sections_with_items()
     _clamp_state(items)
     view = TodoView(items)
-    content = render_text(sections, _ui_state["page"], _total_pages(items))
+    page = _ui_state["page"]
+    total = _total_pages(items)
+    on_page_ids = {it["id"] for it in items[page * PAGE_SIZE : (page + 1) * PAGE_SIZE]}
+    embed = render_embed(sections, on_page_ids, page, total)
     if msg is None:
-        msg = await channel.send(content=content, view=view)
+        msg = await channel.send(embed=embed, view=view)
         try:
             await msg.pin()
         except discord.HTTPException as e:
             log.warning("could not pin todo message: %s", e)
         storage.todo_set_state(PINNED_STATE_KEY, str(msg.id))
     else:
-        await msg.edit(content=content, view=view)
+        await msg.edit(content=None, embed=embed, view=view)
     return msg
 
 
@@ -155,18 +202,24 @@ async def rerender(bot: commands.Bot) -> None:
         return
     sections, items = _build_sections_with_items()
     _clamp_state(items)
-    text = render_text(sections, _ui_state["page"], _total_pages(items))
+    page = _ui_state["page"]
+    total = _total_pages(items)
+    on_page_ids = {it["id"] for it in items[page * PAGE_SIZE : (page + 1) * PAGE_SIZE]}
+    embed = render_embed(sections, on_page_ids, page, total)
     view = TodoView(items)
-    await msg.edit(content=text, view=view)
+    await msg.edit(content=None, embed=embed, view=view)
 
 
 async def _ack_inline(interaction: discord.Interaction) -> None:
     """Edit the message the component is on with fresh todo state."""
     sections, items = _build_sections_with_items()
     _clamp_state(items)
-    text = render_text(sections, _ui_state["page"], _total_pages(items))
+    page = _ui_state["page"]
+    total = _total_pages(items)
+    on_page_ids = {it["id"] for it in items[page * PAGE_SIZE : (page + 1) * PAGE_SIZE]}
+    embed = render_embed(sections, on_page_ids, page, total)
     view = TodoView(items)
-    await interaction.response.edit_message(content=text, view=view)
+    await interaction.response.edit_message(content=None, embed=embed, view=view)
 
 
 # --- main pinned view -----------------------------------------------------
@@ -177,22 +230,12 @@ class TodoView(ui.View):
         _clamp_state(items_flat)
         page = _ui_state["page"]
         mode = _ui_state["mode"]
-        selected = _ui_state["selected_item_id"]
         total = _total_pages(items_flat)
         start = page * PAGE_SIZE
         on_page = items_flat[start : start + PAGE_SIZE]
-        num_item_rows = (len(on_page) + 4) // 5
-        ctrl_row = min(4, num_item_rows)
-        for idx, it in enumerate(on_page):
-            row = idx // 5
-            is_selected = mode == "edit" and selected == it["id"]
-            if is_selected:
-                style = discord.ButtonStyle.success
-            elif mode == "edit":
-                style = discord.ButtonStyle.primary
-            else:
-                style = discord.ButtonStyle.secondary
-            self.add_item(TodoItemButton(it["id"], _truncate(it["text"]), style, row))
+        ctrl_row = 1
+        if on_page:
+            self.add_item(TodoItemSelect(on_page, mode))
         if mode == "edit":
             self.add_item(ActionButton("top", "⬆ Top", "todo:act:top", ctrl_row))
             self.add_item(ActionButton("up", "▲ Up", "todo:act:up", ctrl_row))
@@ -207,23 +250,37 @@ class TodoView(ui.View):
             self.add_item(PageNextButton(ctrl_row, disabled=page >= total - 1))
 
 
-class TodoItemButton(ui.Button):
-    def __init__(self, item_id: int, label: str, style: discord.ButtonStyle, row: int):
+class TodoItemSelect(ui.Select):
+    def __init__(self, items_on_page: list[dict], mode: str):
+        placeholder = "Pick item to move…" if mode == "edit" else "✓ Mark as done…"
+        options = [
+            discord.SelectOption(
+                label=_truncate(it["text"]),
+                value=str(it["id"]),
+                description=it["section_name"][:100],
+            )
+            for it in items_on_page
+        ]
         super().__init__(
-            style=style,
-            label=label,
-            custom_id=f"todo:item:{item_id}",
-            row=row,
+            placeholder=placeholder,
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id="todo:item_select",
+            row=0,
         )
-        self.item_id = item_id
 
     async def callback(self, interaction: discord.Interaction) -> None:
         if await _gate(interaction):
             return
+        try:
+            item_id = int(self.values[0])
+        except (ValueError, IndexError):
+            return
         if _ui_state["mode"] == "edit":
-            _ui_state["selected_item_id"] = self.item_id
+            _ui_state["selected_item_id"] = item_id
         else:
-            storage.todo_item_delete(self.item_id)
+            storage.todo_item_delete(item_id)
         await _ack_inline(interaction)
 
 
