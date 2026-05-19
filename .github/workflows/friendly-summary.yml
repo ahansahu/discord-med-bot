@@ -1,0 +1,66 @@
+name: Friendly PR summary
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  summarize:
+    if: github.event.issue.pull_request && contains(github.event.comment.body, '@claude summarize')
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      models: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Gather PR context
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.issue.number }}
+        run: |
+          gh pr view "$PR" --json title,body \
+            -q '"Title: " + .title + "\n\nDescription:\n" + (.body // "")' > pr_meta.txt
+          gh pr diff "$PR" | head -c 30000 > pr_diff.txt
+          {
+            cat pr_meta.txt
+            echo
+            echo "Diff:"
+            cat pr_diff.txt
+          } > pr_context.txt
+
+      - name: Generate friendly summary
+        id: ai
+        uses: actions/ai-inference@v1
+        with:
+          model: openai/gpt-4o-mini
+          system-prompt: |
+            You are writing for a non-technical co-maintainer of a Discord
+            betting bot called "bouzt". Summarize the PR in 3-5 short bullets
+            in plain, warm language. Focus on user-visible behavior:
+            new/changed commands, fixes, new features. Skip refactors,
+            tests, and internal cleanup unless that's all the PR contains.
+            No code, no file paths, no jargon.
+            HARD LIMIT: keep the entire response under 1800 characters so it
+            fits in a single Discord message for users without Nitro (cap
+            is 2000 chars; leave headroom for a short header). If you'd
+            exceed the limit, drop whole bullets rather than truncate
+            mid-sentence.
+          prompt-file: pr_context.txt
+
+      - name: Enforce Discord length cap
+        env:
+          BODY: ${{ steps.ai.outputs.response }}
+        run: |
+          python3 -c "import os; b=os.environ['BODY']; open('summary.txt','w').write(b if len(b)<=1900 else b[:1897].rstrip()+'...')"
+
+      - name: Post comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.issue.number }}
+        run: |
+          {
+            printf '## Plain-English summary (Discord-ready, <2000 chars)\n\n'
+            cat summary.txt
+          } | gh pr comment "$PR" --body-file -
