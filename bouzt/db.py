@@ -187,8 +187,61 @@ def _column_exists(c, table: str, column: str) -> bool:
     return any(r[1] == column for r in cur.fetchall())
 
 
+def _drop_status_check(c) -> None:
+    """The previous schema had CHECK (status IN ('open','closed','cancelled'))
+    on bouzt_competitions. Drop it so the new 'locked' state is writable on
+    databases that were created before this migration."""
+    if USE_POSTGRES:
+        # Drop every CHECK constraint on bouzt_competitions whose definition
+        # references the `status` column. Safe — `stake > 0` lives on
+        # bouzt_bets and isn't touched.
+        cur = c.execute(
+            "SELECT con.conname FROM pg_constraint con "
+            "JOIN pg_class rel ON rel.oid = con.conrelid "
+            "WHERE rel.relname = 'bouzt_competitions' "
+            "  AND con.contype = 'c' "
+            "  AND pg_get_constraintdef(con.oid) ILIKE '%status%'"
+        )
+        for row in cur.fetchall():
+            name = row["conname"] if isinstance(row, dict) else row[0]
+            c.execute(f'ALTER TABLE bouzt_competitions DROP CONSTRAINT IF EXISTS "{name}"')
+        return
+    # SQLite: CHECK can't be dropped via ALTER. Rewrite the schema text in
+    # sqlite_master directly — preferred over a table rebuild because of the
+    # ON DELETE CASCADE FKs from bouzt_outcomes and bouzt_bets.
+    import re
+    cur = c.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='bouzt_competitions'"
+    )
+    row = cur.fetchone()
+    if row is None:
+        return
+    sql = row[0]
+    if sql is None or "CHECK" not in sql.upper():
+        return
+    new_sql, n = re.subn(
+        r"\s*CHECK\s*\(\s*status\s+IN\s*\([^)]*\)\s*\)",
+        "",
+        sql,
+        flags=re.IGNORECASE,
+    )
+    if n == 0:
+        return
+    c.execute("PRAGMA writable_schema = 1")
+    c.execute(
+        "UPDATE sqlite_master SET sql = ? WHERE type='table' AND name='bouzt_competitions'",
+        (new_sql,),
+    )
+    c.execute("PRAGMA writable_schema = 0")
+    # Bump schema_version so the current connection notices the change.
+    cur = c.execute("PRAGMA schema_version")
+    v = cur.fetchone()[0]
+    c.execute(f"PRAGMA schema_version = {int(v) + 1}")
+
+
 def _migrate(c) -> None:
-    """Add columns to pre-existing tables. Idempotent."""
+    """Add columns and drop the obsolete status CHECK on pre-existing tables.
+    Idempotent."""
     for col, ddl in [
         ("locks_at", f"ALTER TABLE bouzt_competitions ADD COLUMN locks_at TEXT"),
         ("locked_at", f"ALTER TABLE bouzt_competitions ADD COLUMN locked_at TEXT"),
@@ -197,6 +250,7 @@ def _migrate(c) -> None:
             c.execute(ddl)
     if not _column_exists(c, "bouzt_bets", "result"):
         c.execute("ALTER TABLE bouzt_bets ADD COLUMN result TEXT")
+    _drop_status_check(c)
 
 
 def init_db() -> None:
