@@ -133,7 +133,7 @@ async def _outcomes_for_comp_autocomplete(
     q = (current or "").lower()
     out = []
     for o in comp["outcomes"]:
-        label = f"#{o['id']} — {o['label']}"
+        label = f"#{int(o['position']) + 1} — {o['label']}"
         if q and q not in label.lower():
             continue
         out.append(app_commands.Choice(name=label[:100], value=int(o["id"])))
@@ -281,10 +281,16 @@ async def cmd_create(
         log.exception("create failed")
         await _reply_error(interaction, f"error: {e}")
         return
-    lines = [f"`#{o['id']}` — {o['label']}" for o in comp["outcomes"]]
+    lines = [
+        f"`#{int(o['position']) + 1}` — {o['label']}"
+        for o in comp["outcomes"]
+    ]
     embed = discord.Embed(
         title=f"Competition #{comp['id']} — {comp['title']}",
-        description="bets are now open. use `/bouzt bet` with the outcome ID below.",
+        description=(
+            "bets are now open. use `/bouzt bet` and pick the outcome from "
+            "the autocomplete."
+        ),
         color=discord.Color.green(),
     )
     embed.add_field(name="Outcomes", value="\n".join(lines), inline=False)
@@ -341,7 +347,10 @@ def _competition_embed(comp: dict) -> discord.Embed:
         marker = ""
         if status == "closed" and comp.get("winning_outcome_id") == o["id"]:
             marker = " 🏆"
-        rows.append(f"`#{o['id']}` {o['label']} — {_fmt(int(o.get('pool', 0)))}{marker}")
+        rows.append(
+            f"`#{int(o['position']) + 1}` {o['label']} — "
+            f"{_fmt(int(o.get('pool', 0)))}{marker}"
+        )
     embed.add_field(name="Outcomes", value="\n".join(rows) or "(none)", inline=False)
     return embed
 
