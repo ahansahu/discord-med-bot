@@ -31,11 +31,13 @@ def register(bot) -> None:
         bot.add_listener(events.on_member_join, name="on_member_join")
         bot._bouzt_listeners_added = True
 
-    # Schedule the one-time backfill after this on_ready cycle. Fire-and-forget
-    # because it self-guards via the meta flag in the DB.
     if not getattr(bot, "_bouzt_backfill_scheduled", False):
         bot._bouzt_backfill_scheduled = True
         asyncio.create_task(events.run_backfill(bot))
+
+    if not getattr(bot, "_bouzt_ticker_started", False):
+        bot._bouzt_ticker_started = True
+        asyncio.create_task(events.auto_lock_ticker(bot))
 
 
 __all__ = ["register"]
