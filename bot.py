@@ -19,6 +19,7 @@ from config import (
     TODO_CHANNEL_ID,
     TZ,
 )
+import bouzt
 import chart
 import storage
 import todo
@@ -35,6 +36,7 @@ log = logging.getLogger("med_bot")
 intents = discord.Intents.default()
 intents.message_content = True
 intents.reactions = True
+intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
@@ -137,6 +139,7 @@ async def on_ready() -> None:
     log.info("logged in as %s (id=%s)", bot.user, bot.user.id if bot.user else "?")
     storage.init_db()
     todo.register(bot)
+    bouzt.register(bot)
     try:
         guild = discord.Object(id=GUILD_ID)
         bot.tree.copy_global_to(guild=guild)
