@@ -432,6 +432,7 @@ def hydrate_competitions(comps: list) -> list:
         cur = c.execute(
             f"SELECT competition_id, outcome_id, COALESCE(SUM(stake), 0) AS pool "
             f"FROM bouzt_bets WHERE competition_id IN ({placeholders}) "
+            f"  AND (result IS NULL OR result <> 'cancelled') "
             f"GROUP BY competition_id, outcome_id",
             tuple(ids),
         )
@@ -452,7 +453,9 @@ def per_outcome_pools(comp_id: int) -> dict:
     with conn() as c:
         cur = c.execute(
             f"SELECT outcome_id, COALESCE(SUM(stake), 0) AS pool "
-            f"FROM bouzt_bets WHERE competition_id = {PARAM} GROUP BY outcome_id",
+            f"FROM bouzt_bets WHERE competition_id = {PARAM} "
+            f"  AND (result IS NULL OR result <> 'cancelled') "
+            f"GROUP BY outcome_id",
             (comp_id,),
         )
         return {_row_get(r, "outcome_id"): int(_row_get(r, "pool"))
