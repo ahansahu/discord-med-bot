@@ -23,6 +23,7 @@ from config import (
 import chart
 import storage
 import todo
+import water
 from scheduler import setup_scheduler
 
 
@@ -139,6 +140,7 @@ async def on_ready() -> None:
     log.info("logged in as %s (id=%s)", bot.user, bot.user.id if bot.user else "?")
     storage.init_db()
     todo.register(bot)
+    water.register(bot)
     try:
         guild = discord.Object(id=GUILD_ID)
         bot.tree.copy_global_to(guild=guild)
@@ -155,6 +157,12 @@ async def on_ready() -> None:
             log.info("todo pinned message ready")
         except Exception as e:
             log.warning("todo setup failed: %s", e)
+
+    try:
+        await water.ensure_pinned(bot)
+        log.info("water hydration card ready")
+    except Exception as e:
+        log.warning("water setup failed: %s", e)
 
     if not getattr(bot, "_scheduler_started", False):
         bot._scheduler = setup_scheduler(bot)
