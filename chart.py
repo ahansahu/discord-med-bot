@@ -30,6 +30,16 @@ def _bg_path(month: int) -> Path:
 def _bg_path_week(month: int) -> Path:
     specific = DECOR_DIR / f"background_week_{month:02d}.png"
     return specific if specific.exists() else DECOR_DIR / "background_week.png"
+
+
+def _bg_path_water(month: int) -> Path:
+    specific = DECOR_DIR / f"water_background_{month:02d}.png"
+    return specific if specific.exists() else DECOR_DIR / "water_background.png"
+
+
+def _bg_path_water_week(month: int) -> Path:
+    specific = DECOR_DIR / f"water_background_week_{month:02d}.png"
+    return specific if specific.exists() else DECOR_DIR / "water_background_week.png"
 SERIF_FONT_CANDIDATES = [
     (FONT_DIR / "Fraunces-VF.ttf", "SemiBold"),
     (FONT_DIR / "PlayfairDisplay-VF.ttf", "Bold"),
@@ -618,6 +628,290 @@ def render_week_strip(end_day: Optional[date] = None,
     legend_top = pad + title_h + weekday_h + cell + legend_gap
     _draw_legend(draw, img, width, legend_top, footer_h,
                  cnt["taken"], cnt["missed"], streak, footer_font, pool)
+
+    out = io.BytesIO()
+    img.convert("RGB").save(out, "PNG")
+    return out.getvalue()
+
+
+# ---------- water intake: tiered droplet stickers + charts ----------------
+# Kept entirely separate from the medication sticker pool above: water stickers
+# are cached as water_tier_{n}.png (not matched by _sticker_pool's globs), so
+# the two feature sets never share or reshuffle each other's art.
+
+WATER_BLUE = (64, 164, 223)
+WATER_BLUE_DARK = (28, 110, 168)
+WATER_EMPTY = (205, 232, 247)
+
+
+def _droplet_points(cx: float, cy: float, r: float) -> list:
+    """Teardrop outline: pointed apex on top, round bulb at the bottom."""
+    bcx, bcy, br = cx, cy + 0.30 * r, 0.70 * r
+    apex = (cx, cy - r)
+    pts = [apex]
+    start, end, steps = -60, 240, 48  # skip the top arc, replaced by the apex
+    for i in range(steps + 1):
+        a = math.radians(start + (end - start) * i / steps)
+        pts.append((bcx + br * math.cos(a), bcy + br * math.sin(a)))
+    return pts
+
+
+def _render_water_tier(tier: int) -> Image.Image:
+    """Draw a glossy droplet filled to the tier's water level (1/2/3)."""
+    size = STICKER_SIZE
+    cx = cy = size // 2
+    r = size // 2 - 8
+    pts = _droplet_points(cx, cy, r)
+
+    mask = Image.new("L", (size, size), 0)
+    ImageDraw.Draw(mask).polygon(pts, fill=255)
+
+    # empty droplet body
+    body = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    ImageDraw.Draw(body).polygon(pts, fill=WATER_EMPTY + (255,))
+    img = Image.composite(body, Image.new("RGBA", (size, size), (0, 0, 0, 0)), mask)
+
+    # water level, clipped to the droplet shape
+    frac = {1: 0.30, 2: 0.62, 3: 1.0}.get(tier, 1.0)
+    top, bottom = cy - r, cy + r
+    water_top = bottom - frac * (bottom - top)
+    water = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    ImageDraw.Draw(water).rectangle([0, water_top, size, bottom + 2],
+                                    fill=WATER_BLUE + (255,))
+    water = Image.composite(water, Image.new("RGBA", (size, size), (0, 0, 0, 0)), mask)
+    img = Image.alpha_composite(img, water)
+
+    d = ImageDraw.Draw(img)
+    d.line(pts + [pts[0]], fill=WATER_BLUE_DARK + (255,), width=3, joint="curve")
+    # glossy highlight
+    hl_r = max(3, int(r * 0.16))
+    d.ellipse([cx - int(r * 0.30) - hl_r, cy - hl_r,
+               cx - int(r * 0.30) + hl_r, cy + hl_r * 2],
+              fill=(255, 255, 255, 150))
+    # tier 3 gets a celebratory sparkle
+    if tier >= 3:
+        sx, sy, sr = cx + int(r * 0.45), cy - int(r * 0.55), int(r * 0.22)
+        d.line([(sx, sy - sr), (sx, sy + sr)], fill=(255, 255, 255, 230), width=2)
+        d.line([(sx - sr, sy), (sx + sr, sy)], fill=(255, 255, 255, 230), width=2)
+    return img
+
+
+def _ensure_water_stickers() -> list[Path]:
+    STICKER_DIR.mkdir(parents=True, exist_ok=True)
+    paths = []
+    for tier in (1, 2, 3):
+        p = STICKER_DIR / f"water_tier_{tier}.png"
+        if not p.exists():
+            _render_water_tier(tier).save(p, "PNG")
+        paths.append(p)
+    return paths
+
+
+def _load_water_tier_sticker(tier: int, size: int) -> Image.Image:
+    paths = _ensure_water_stickers()
+    idx = max(1, min(3, tier)) - 1
+    img = Image.open(paths[idx]).convert("RGBA")
+    if img.size != (size, size):
+        img = img.resize((size, size), Image.LANCZOS)
+    return img
+
+
+def _draw_water_legend(draw: ImageDraw.ImageDraw, img: Image.Image,
+                       image_w: int, footer_top: int, footer_h: int,
+                       met: int, partial: int, streak: Optional[int],
+                       font: ImageFont.ImageFont) -> None:
+    cy = footer_top + footer_h // 2
+    icon_size = 20
+    gap = 8
+    seg_gap = 22
+    pill_pad_x = 20
+
+    labels = [f"Goal {met}", f"Partial {partial}"]
+    if streak is not None:
+        labels.append(f"Streak {streak} day{'s' if streak != 1 else ''}")
+    seg_widths = [icon_size + gap + int(draw.textlength(lbl, font=font)) for lbl in labels]
+    content_w = sum(seg_widths) + seg_gap * (len(labels) - 1)
+    pill_w = content_w + pill_pad_x * 2
+    pill_h = 40
+    pill_x = (image_w - pill_w) // 2
+    pill_y = footer_top + (footer_h - pill_h) // 2
+
+    pill_layer = Image.new("RGBA", (pill_w, pill_h), (0, 0, 0, 0))
+    ImageDraw.Draw(pill_layer).rounded_rectangle(
+        [0, 0, pill_w - 1, pill_h - 1],
+        radius=10, fill=LEGEND_FILL, outline=LEGEND_BORDER, width=2,
+    )
+    img.alpha_composite(pill_layer, (pill_x, pill_y))
+
+    ascent, _ = font.getmetrics()
+    text_y = cy - ascent // 2 - 1
+    start_x = pill_x + pill_pad_x
+
+    icons = [3, 2, 3]  # goal=tier3, partial=tier2, streak=tier3
+    sx = start_x
+    for i, lbl in enumerate(labels):
+        sticker = _load_water_tier_sticker(icons[i], icon_size)
+        img.paste(sticker, (sx, cy - icon_size // 2), sticker)
+        draw.text((sx + icon_size + gap, text_y), lbl, fill=LEGEND_FG, font=font)
+        sx += seg_widths[i] + seg_gap
+
+
+def _blit_bg(img: Image.Image, bg_path: Path, width: int, height: int) -> None:
+    if not bg_path.exists():
+        return
+    try:
+        bg = Image.open(bg_path).convert("RGBA")
+        scale = max(width / bg.width, height / bg.height)
+        sw, sh = int(bg.width * scale), int(bg.height * scale)
+        bg = bg.resize((sw, sh), Image.LANCZOS)
+        ox, oy = (sw - width) // 2, (sh - height) // 2
+        bg = bg.crop((ox, oy, ox + width, oy + height))
+        img.paste(bg, (0, 0), bg)
+    except Exception as e:
+        log.warning("could not load decor background %s: %s", bg_path, e)
+
+
+def render_water_month(year: int, month: int, show_streak: bool = True) -> bytes:
+    cell = 95
+    pad = 44
+    cols = 7
+    cal = calendar.Calendar(firstweekday=0)
+    weeks = cal.monthdayscalendar(year, month)
+    rows = len(weeks)
+
+    title_h = 76
+    weekday_h = 34
+    footer_h = 76
+    width = pad * 2 + cols * cell
+    height = pad * 2 + title_h + weekday_h + rows * cell + footer_h
+
+    img = Image.new("RGBA", (width, height), BG + (255,))
+    _blit_bg(img, _bg_path_water(month), width, height)
+    draw = ImageDraw.Draw(img, "RGBA")
+
+    title_font = _load_font(36, prefer_serif=True)
+    day_label_font = _load_font(17)
+    day_num_font = _load_font(15)
+    footer_font = _load_font(16)
+
+    title = f"{calendar.month_name[month]} {year} — Water"
+    tw = draw.textlength(title, font=title_font)
+    draw.text(((width - tw) // 2, pad + 6), title, fill=TITLE_INK, font=title_font)
+
+    labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    label_y = pad + title_h
+    for i, lbl in enumerate(labels):
+        x = pad + i * cell
+        lw = draw.textlength(lbl, font=day_label_font)
+        draw.text((x + (cell - lw) // 2, label_y + 6), lbl, fill=DAY_FG, font=day_label_font)
+
+    grid_y0 = pad + title_h + weekday_h
+    today = datetime.now(TZ).date()
+    start = date(year, month, 1)
+    end = date(year, month, calendar.monthrange(year, month)[1])
+    logs = storage.water_status_map(start, end)
+
+    sticker_size = cell - 22
+
+    for r, week in enumerate(weeks):
+        for c, day in enumerate(week):
+            x0 = pad + c * cell
+            y0 = grid_y0 + r * cell
+            if day == 0:
+                continue
+            draw.rounded_rectangle([x0, y0, x0 + cell, y0 + cell],
+                                   radius=CELL_RADIUS, outline=GRID, width=1)
+            d = date(year, month, day)
+            draw.text((x0 + 8, y0 + 5), str(day), fill=DAY_FG, font=day_num_font)
+            row = logs.get(d.isoformat())
+            cx = x0 + cell // 2
+            cy = y0 + cell // 2 + 6
+            tier = storage.water_tier(row["glasses"], row["goal"]) if row else 0
+            if tier >= 1:
+                sticker = _load_water_tier_sticker(tier, sticker_size)
+                img.paste(sticker, (cx - sticker_size // 2, cy - sticker_size // 2), sticker)
+            elif d == today:
+                draw.rounded_rectangle([x0 + 2, y0 + 2, x0 + cell - 2, y0 + cell - 2],
+                                       radius=max(CELL_RADIUS - 2, 2),
+                                       outline=TODAY_INK, width=3)
+
+    cnt = storage.water_counts(start, end)
+    streak = storage.water_streak() if show_streak else None
+    _draw_water_legend(draw, img, width, height - footer_h, footer_h,
+                       cnt["met"], cnt["partial"], streak, footer_font)
+
+    out = io.BytesIO()
+    img.convert("RGB").save(out, "PNG")
+    return out.getvalue()
+
+
+def render_water_week_strip(end_day: Optional[date] = None,
+                            show_streak: bool = True) -> bytes:
+    if end_day is None:
+        end_day = datetime.now(TZ).date()
+    start_day = end_day - timedelta(days=6)
+
+    cell = 120
+    pad = 44
+    cols = 7
+    title_h = 76
+    weekday_h = 34
+    legend_gap = 14
+    footer_h = 76
+    bottom_pad = 255
+    width = pad * 2 + cols * cell
+    height = pad + title_h + weekday_h + cell + legend_gap + footer_h + bottom_pad
+
+    img = Image.new("RGBA", (width, height), BG + (255,))
+    _blit_bg(img, _bg_path_water_week(end_day.month), width, height)
+    draw = ImageDraw.Draw(img, "RGBA")
+
+    title_font = _load_font(36, prefer_serif=True)
+    day_label_font = _load_font(17)
+    day_num_font = _load_font(15)
+    footer_font = _load_font(16)
+
+    title = "Last 7 days — Water"
+    tw = draw.textlength(title, font=title_font)
+    draw.text(((width - tw) // 2, pad + 6), title, fill=TITLE_INK, font=title_font)
+
+    label_y = pad + title_h
+    labels = [(start_day + timedelta(days=i)).strftime("%a") for i in range(cols)]
+    for i, lbl in enumerate(labels):
+        x = pad + i * cell
+        lw = draw.textlength(lbl, font=day_label_font)
+        draw.text((x + (cell - lw) // 2, label_y + 6), lbl, fill=DAY_FG, font=day_label_font)
+
+    grid_y0 = pad + title_h + weekday_h
+    today = datetime.now(TZ).date()
+    logs = storage.water_status_map(start_day, end_day)
+
+    sticker_size = cell - 22
+
+    for i in range(cols):
+        d = start_day + timedelta(days=i)
+        x0 = pad + i * cell
+        y0 = grid_y0
+        draw.rounded_rectangle([x0, y0, x0 + cell, y0 + cell],
+                               radius=CELL_RADIUS, outline=GRID, width=1)
+        draw.text((x0 + 8, y0 + 5), str(d.day), fill=DAY_FG, font=day_num_font)
+        row = logs.get(d.isoformat())
+        cx = x0 + cell // 2
+        cy = y0 + cell // 2 + 6
+        tier = storage.water_tier(row["glasses"], row["goal"]) if row else 0
+        if tier >= 1:
+            sticker = _load_water_tier_sticker(tier, sticker_size)
+            img.paste(sticker, (cx - sticker_size // 2, cy - sticker_size // 2), sticker)
+        elif d == today:
+            draw.rounded_rectangle([x0 + 2, y0 + 2, x0 + cell - 2, y0 + cell - 2],
+                                   radius=max(CELL_RADIUS - 2, 2),
+                                   outline=TODAY_INK, width=3)
+
+    cnt = storage.water_counts(start_day, end_day)
+    streak = storage.water_streak() if show_streak else None
+    legend_top = pad + title_h + weekday_h + cell + legend_gap
+    _draw_water_legend(draw, img, width, legend_top, footer_h,
+                       cnt["met"], cnt["partial"], streak, footer_font)
 
     out = io.BytesIO()
     img.convert("RGB").save(out, "PNG")

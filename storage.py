@@ -99,12 +99,52 @@ if USE_POSTGRES:
         f"INSERT INTO todo_state (key, value) VALUES ({PARAM}, {PARAM}) "
         "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value"
     )
+    WATER_LOG_SCHEMA = """
+    CREATE TABLE IF NOT EXISTS water_log (
+        date       TEXT PRIMARY KEY,
+        glasses    INTEGER NOT NULL DEFAULT 0,
+        goal       INTEGER NOT NULL,
+        updated_at TEXT
+    )
+    """
+    WATER_STATE_SCHEMA = """
+    CREATE TABLE IF NOT EXISTS water_state (
+        key   TEXT PRIMARY KEY,
+        value TEXT
+    )
+    """
+    INSERT_IGNORE_WATER = (
+        f"INSERT INTO water_log (date, glasses, goal) VALUES ({PARAM}, 0, {PARAM}) "
+        "ON CONFLICT (date) DO NOTHING"
+    )
+    UPSERT_WATER = (
+        f"INSERT INTO water_log (date, glasses, goal, updated_at) "
+        f"VALUES ({PARAM}, {PARAM}, {PARAM}, {PARAM}) "
+        "ON CONFLICT (date) DO UPDATE SET "
+        "glasses = EXCLUDED.glasses, goal = EXCLUDED.goal, updated_at = EXCLUDED.updated_at"
+    )
+    # Atomic increment: the add + clamp happen in SQL so concurrent logs for the
+    # same day can't lose an update via a Python read-modify-write. On a new row
+    # the goal is seeded; on conflict the existing goal is preserved.
+    INCREMENT_WATER = (
+        f"INSERT INTO water_log (date, glasses, goal, updated_at) "
+        f"VALUES ({PARAM}, GREATEST(0, {PARAM}), {PARAM}, {PARAM}) "
+        "ON CONFLICT (date) DO UPDATE SET "
+        f"glasses = GREATEST(0, water_log.glasses + {PARAM}), "
+        "updated_at = EXCLUDED.updated_at"
+    )
+    UPSERT_WATER_STATE = (
+        f"INSERT INTO water_state (key, value) VALUES ({PARAM}, {PARAM}) "
+        "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value"
+    )
     SUPABASE_GRANTS_TABLES = (
         "daily_log",
         "custom_stickers",
         "todo_sections",
         "todo_items",
         "todo_state",
+        "water_log",
+        "water_state",
     )
     # Per-table grants run in their own transaction so a failure on one table
     # (or on the GRANTS step itself) cannot roll back the preceding CREATE
@@ -201,6 +241,43 @@ else:
         f"INSERT INTO todo_state (key, value) VALUES ({PARAM}, {PARAM}) "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
     )
+    WATER_LOG_SCHEMA = """
+    CREATE TABLE IF NOT EXISTS water_log (
+        date       TEXT PRIMARY KEY,
+        glasses    INTEGER NOT NULL DEFAULT 0,
+        goal       INTEGER NOT NULL,
+        updated_at TEXT
+    )
+    """
+    WATER_STATE_SCHEMA = """
+    CREATE TABLE IF NOT EXISTS water_state (
+        key   TEXT PRIMARY KEY,
+        value TEXT
+    )
+    """
+    INSERT_IGNORE_WATER = (
+        f"INSERT OR IGNORE INTO water_log (date, glasses, goal) VALUES ({PARAM}, 0, {PARAM})"
+    )
+    UPSERT_WATER = (
+        f"INSERT INTO water_log (date, glasses, goal, updated_at) "
+        f"VALUES ({PARAM}, {PARAM}, {PARAM}, {PARAM}) "
+        "ON CONFLICT(date) DO UPDATE SET "
+        "glasses = excluded.glasses, goal = excluded.goal, updated_at = excluded.updated_at"
+    )
+    # Atomic increment: the add + clamp happen in SQL so concurrent logs for the
+    # same day can't lose an update via a Python read-modify-write. On a new row
+    # the goal is seeded; on conflict the existing goal is preserved.
+    INCREMENT_WATER = (
+        f"INSERT INTO water_log (date, glasses, goal, updated_at) "
+        f"VALUES ({PARAM}, MAX(0, {PARAM}), {PARAM}, {PARAM}) "
+        "ON CONFLICT(date) DO UPDATE SET "
+        f"glasses = MAX(0, water_log.glasses + {PARAM}), "
+        "updated_at = excluded.updated_at"
+    )
+    UPSERT_WATER_STATE = (
+        f"INSERT INTO water_state (key, value) VALUES ({PARAM}, {PARAM}) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+    )
 
 
 # --- public API -----------------------------------------------------------
@@ -213,6 +290,8 @@ def init_db() -> None:
         c.execute(TODO_SECTIONS_SCHEMA)
         c.execute(TODO_ITEMS_SCHEMA)
         c.execute(TODO_STATE_SCHEMA)
+        c.execute(WATER_LOG_SCHEMA)
+        c.execute(WATER_STATE_SCHEMA)
     if USE_POSTGRES:
         for table in SUPABASE_GRANTS_TABLES:
             try:
@@ -620,3 +699,120 @@ def todo_get_state(key: str) -> Optional[str]:
 def todo_set_state(key: str, value: str) -> None:
     with _conn() as c:
         c.execute(UPSERT_TODO_STATE, (key, value))
+
+
+# --- water intake tracker -------------------------------------------------
+
+def water_tier(glasses: Optional[int], goal: Optional[int]) -> int:
+    """Map a day's progress to a sticker tier: 0 none, 1 under-50%, 2 50-99%,
+    3 goal met. Pure helper so the threshold logic lives in one place."""
+    g = glasses or 0
+    if g <= 0:
+        return 0
+    if not goal or goal <= 0:
+        return 3
+    pct = g / goal
+    if pct >= 1.0:
+        return 3
+    if pct >= 0.5:
+        return 2
+    return 1
+
+
+def water_ensure(d: str, goal: int) -> None:
+    with _conn() as c:
+        c.execute(INSERT_IGNORE_WATER, (d, goal))
+
+
+def water_get(d: str):
+    with _conn() as c:
+        cur = c.execute(f"SELECT * FROM water_log WHERE date = {PARAM}", (d,))
+        return cur.fetchone()
+
+
+def water_set(d: str, glasses: int, goal: int) -> int:
+    """Set today's glass count (and goal) outright. Returns the stored count."""
+    glasses = max(0, glasses)
+    now_iso = datetime.now(TZ).isoformat(timespec="seconds")
+    with _conn() as c:
+        c.execute(UPSERT_WATER, (d, glasses, goal, now_iso))
+    return glasses
+
+
+def water_add(d: str, delta: int, goal: int) -> int:
+    """Add (or subtract) glasses, clamped at >= 0. Preserves any goal already
+    stored for the day; otherwise seeds `goal`. Returns the new count.
+
+    The add + clamp run in a single SQL statement so concurrent logs for the
+    same day are all counted (no read-modify-write lost update)."""
+    now_iso = datetime.now(TZ).isoformat(timespec="seconds")
+    with _conn() as c:
+        c.execute(INCREMENT_WATER, (d, delta, goal, now_iso, delta))
+        cur = c.execute(
+            f"SELECT glasses FROM water_log WHERE date = {PARAM}", (d,)
+        )
+        row = cur.fetchone()
+    return (_row_get(row, "glasses") or 0) if row else 0
+
+
+def water_range_logs(start: date, end: date) -> list:
+    with _conn() as c:
+        cur = c.execute(
+            f"SELECT * FROM water_log WHERE date >= {PARAM} AND date <= {PARAM} "
+            "ORDER BY date",
+            (start.isoformat(), end.isoformat()),
+        )
+        return list(cur.fetchall())
+
+
+def water_status_map(start: date, end: date) -> dict:
+    return {_row_get(r, "date"): r for r in water_range_logs(start, end)}
+
+
+def water_counts(start: date, end: date) -> dict:
+    """Tally days by tier in [start, end]."""
+    out = {"met": 0, "partial": 0, "low": 0}
+    for r in water_range_logs(start, end):
+        t = water_tier(_row_get(r, "glasses"), _row_get(r, "goal"))
+        if t >= 3:
+            out["met"] += 1
+        elif t == 2:
+            out["partial"] += 1
+        elif t == 1:
+            out["low"] += 1
+    return out
+
+
+def water_streak() -> int:
+    """Consecutive days that hit goal (tier 3), ending today or yesterday."""
+    today = datetime.now(TZ).date()
+    logs = water_status_map(today - timedelta(days=365), today)
+
+    def hit(day) -> bool:
+        row = logs.get(day.isoformat())
+        if row is None:
+            return False
+        return water_tier(_row_get(row, "glasses"), _row_get(row, "goal")) >= 3
+
+    cursor = today
+    if not hit(today):
+        cursor = today - timedelta(days=1)
+    streak = 0
+    while hit(cursor):
+        streak += 1
+        cursor -= timedelta(days=1)
+    return streak
+
+
+def water_get_state(key: str) -> Optional[str]:
+    with _conn() as c:
+        cur = c.execute(
+            f"SELECT value FROM water_state WHERE key = {PARAM}", (key,)
+        )
+        row = cur.fetchone()
+    return _row_get(row, "value") if row else None
+
+
+def water_set_state(key: str, value: str) -> None:
+    with _conn() as c:
+        c.execute(UPSERT_WATER_STATE, (key, value))
