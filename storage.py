@@ -123,6 +123,16 @@ if USE_POSTGRES:
         "ON CONFLICT (date) DO UPDATE SET "
         "glasses = EXCLUDED.glasses, goal = EXCLUDED.goal, updated_at = EXCLUDED.updated_at"
     )
+    # Atomic increment: the add + clamp happen in SQL so concurrent logs for the
+    # same day can't lose an update via a Python read-modify-write. On a new row
+    # the goal is seeded; on conflict the existing goal is preserved.
+    INCREMENT_WATER = (
+        f"INSERT INTO water_log (date, glasses, goal, updated_at) "
+        f"VALUES ({PARAM}, GREATEST(0, {PARAM}), {PARAM}, {PARAM}) "
+        "ON CONFLICT (date) DO UPDATE SET "
+        f"glasses = GREATEST(0, water_log.glasses + {PARAM}), "
+        "updated_at = EXCLUDED.updated_at"
+    )
     UPSERT_WATER_STATE = (
         f"INSERT INTO water_state (key, value) VALUES ({PARAM}, {PARAM}) "
         "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value"
@@ -253,6 +263,16 @@ else:
         f"VALUES ({PARAM}, {PARAM}, {PARAM}, {PARAM}) "
         "ON CONFLICT(date) DO UPDATE SET "
         "glasses = excluded.glasses, goal = excluded.goal, updated_at = excluded.updated_at"
+    )
+    # Atomic increment: the add + clamp happen in SQL so concurrent logs for the
+    # same day can't lose an update via a Python read-modify-write. On a new row
+    # the goal is seeded; on conflict the existing goal is preserved.
+    INCREMENT_WATER = (
+        f"INSERT INTO water_log (date, glasses, goal, updated_at) "
+        f"VALUES ({PARAM}, MAX(0, {PARAM}), {PARAM}, {PARAM}) "
+        "ON CONFLICT(date) DO UPDATE SET "
+        f"glasses = MAX(0, water_log.glasses + {PARAM}), "
+        "updated_at = excluded.updated_at"
     )
     UPSERT_WATER_STATE = (
         f"INSERT INTO water_state (key, value) VALUES ({PARAM}, {PARAM}) "
@@ -721,19 +741,18 @@ def water_set(d: str, glasses: int, goal: int) -> int:
 
 def water_add(d: str, delta: int, goal: int) -> int:
     """Add (or subtract) glasses, clamped at >= 0. Preserves any goal already
-    stored for the day; otherwise uses `goal`. Returns the new count."""
+    stored for the day; otherwise seeds `goal`. Returns the new count.
+
+    The add + clamp run in a single SQL statement so concurrent logs for the
+    same day are all counted (no read-modify-write lost update)."""
     now_iso = datetime.now(TZ).isoformat(timespec="seconds")
     with _conn() as c:
+        c.execute(INCREMENT_WATER, (d, delta, goal, now_iso, delta))
         cur = c.execute(
-            f"SELECT glasses, goal FROM water_log WHERE date = {PARAM}", (d,)
+            f"SELECT glasses FROM water_log WHERE date = {PARAM}", (d,)
         )
         row = cur.fetchone()
-        current = (_row_get(row, "glasses") or 0) if row else 0
-        existing_goal = _row_get(row, "goal") if row else None
-        use_goal = existing_goal if existing_goal else goal
-        new = max(0, current + delta)
-        c.execute(UPSERT_WATER, (d, new, use_goal, now_iso))
-    return new
+    return (_row_get(row, "glasses") or 0) if row else 0
 
 
 def water_range_logs(start: date, end: date) -> list:
