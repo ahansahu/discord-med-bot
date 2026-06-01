@@ -22,8 +22,14 @@ CUSTOM_PREFIX = "custom_"
 ASSETS_DIR = Path(__file__).parent / "assets"
 DECOR_DIR = ASSETS_DIR / "decor"
 FONT_DIR = ASSETS_DIR / "fonts"
-BG_PATH = DECOR_DIR / "background.png"
-BG_PATH_WEEK = DECOR_DIR / "background_week.png"
+def _bg_path(month: int) -> Path:
+    specific = DECOR_DIR / f"background_{month:02d}.png"
+    return specific if specific.exists() else DECOR_DIR / "background.png"
+
+
+def _bg_path_week(month: int) -> Path:
+    specific = DECOR_DIR / f"background_week_{month:02d}.png"
+    return specific if specific.exists() else DECOR_DIR / "background_week.png"
 SERIF_FONT_CANDIDATES = [
     (FONT_DIR / "Fraunces-VF.ttf", "SemiBold"),
     (FONT_DIR / "PlayfairDisplay-VF.ttf", "Bold"),
@@ -436,9 +442,10 @@ def render_month(year: int, month: int) -> bytes:
     height = pad * 2 + title_h + weekday_h + rows * cell + footer_h
 
     img = Image.new("RGBA", (width, height), BG + (255,))
-    if BG_PATH.exists():
+    bg_path = _bg_path(month)
+    if bg_path.exists():
         try:
-            bg = Image.open(BG_PATH).convert("RGBA")
+            bg = Image.open(bg_path).convert("RGBA")
             scale = max(width / bg.width, height / bg.height)
             sw, sh = int(bg.width * scale), int(bg.height * scale)
             bg = bg.resize((sw, sh), Image.LANCZOS)
@@ -447,7 +454,7 @@ def render_month(year: int, month: int) -> bytes:
             bg = bg.crop((ox, oy, ox + width, oy + height))
             img.paste(bg, (0, 0), bg)
         except Exception as e:
-            log.warning("could not load decor background %s: %s", BG_PATH, e)
+            log.warning("could not load decor background %s: %s", bg_path, e)
     draw = ImageDraw.Draw(img, "RGBA")
 
     title_font = _load_font(36, prefer_serif=True)
@@ -536,9 +543,10 @@ def render_week_strip(end_day: Optional[date] = None) -> bytes:
     height = pad + title_h + weekday_h + cell + legend_gap + footer_h + bottom_pad
 
     img = Image.new("RGBA", (width, height), BG + (255,))
-    if BG_PATH_WEEK.exists():
+    bg_path = _bg_path_week(end_day.month)
+    if bg_path.exists():
         try:
-            bg = Image.open(BG_PATH_WEEK).convert("RGBA")
+            bg = Image.open(bg_path).convert("RGBA")
             scale = max(width / bg.width, height / bg.height)
             sw, sh = int(bg.width * scale), int(bg.height * scale)
             bg = bg.resize((sw, sh), Image.LANCZOS)
@@ -547,7 +555,7 @@ def render_week_strip(end_day: Optional[date] = None) -> bytes:
             bg = bg.crop((ox, oy, ox + width, oy + height))
             img.paste(bg, (0, 0), bg)
         except Exception as e:
-            log.warning("could not load decor background %s: %s", BG_PATH_WEEK, e)
+            log.warning("could not load decor background %s: %s", bg_path, e)
     draw = ImageDraw.Draw(img, "RGBA")
 
     title_font = _load_font(36, prefer_serif=True)
