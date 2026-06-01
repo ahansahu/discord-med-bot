@@ -351,7 +351,7 @@ CELL_RADIUS = 6
 
 def _draw_legend(draw: ImageDraw.ImageDraw, img: Image.Image,
                  image_w: int, footer_top: int, footer_h: int,
-                 taken: int, missed: int, streak: int,
+                 taken: int, missed: int, streak: Optional[int],
                  font: ImageFont.ImageFont, pool: list) -> None:
     cy = footer_top + footer_h // 2
     icon_size = 18
@@ -359,10 +359,13 @@ def _draw_legend(draw: ImageDraw.ImageDraw, img: Image.Image,
     seg_gap = 22
     pill_pad_x = 20
 
-    streak_text = f"Streak {streak} day{'s' if streak != 1 else ''}"
-    labels = [f"Taken {taken}", f"Missed {missed}", streak_text]
+    # `streak` is None for historical charts, where "current streak" would be
+    # misleading — that segment is dropped entirely.
+    labels = [f"Taken {taken}", f"Missed {missed}"]
+    if streak is not None:
+        labels.append(f"Streak {streak} day{'s' if streak != 1 else ''}")
     seg_widths = [icon_size + gap + int(draw.textlength(lbl, font=font)) for lbl in labels]
-    content_w = sum(seg_widths) + seg_gap * 2
+    content_w = sum(seg_widths) + seg_gap * (len(labels) - 1)
     pill_w = content_w + pill_pad_x * 2
     pill_h = 40
     pill_x = (image_w - pill_w) // 2
@@ -395,9 +398,10 @@ def _draw_legend(draw: ImageDraw.ImageDraw, img: Image.Image,
     draw.line([(xcx - xr, cy + xr), (xcx + xr, cy - xr)], fill=MISSED_FG, width=4)
     draw.text((sx + icon_size + gap, text_y), labels[1], fill=LEGEND_FG, font=font)
 
-    sx = start_x + seg_widths[0] + seg_widths[1] + seg_gap * 2
-    _draw_streak_icon(draw, img, sx, cy, icon_size, pool)
-    draw.text((sx + icon_size + gap, text_y), labels[2], fill=LEGEND_FG, font=font)
+    if streak is not None:
+        sx = start_x + seg_widths[0] + seg_widths[1] + seg_gap * 2
+        _draw_streak_icon(draw, img, sx, cy, icon_size, pool)
+        draw.text((sx + icon_size + gap, text_y), labels[2], fill=LEGEND_FG, font=font)
 
 
 def _draw_streak_icon(draw: ImageDraw.ImageDraw, img: Image.Image,
@@ -427,7 +431,7 @@ def _draw_streak_icon(draw: ImageDraw.ImageDraw, img: Image.Image,
     img.paste(sun, (sx, cy - icon_size // 2), sun)
 
 
-def render_month(year: int, month: int) -> bytes:
+def render_month(year: int, month: int, show_streak: bool = True) -> bytes:
     cell = 95
     pad = 44
     cols = 7
@@ -517,7 +521,7 @@ def render_month(year: int, month: int) -> bytes:
 
     # footer
     cnt = storage.counts(start, end)
-    streak = storage.current_streak()
+    streak = storage.current_streak() if show_streak else None
     _draw_legend(draw, img, width, height - footer_h, footer_h,
                  cnt["taken"], cnt["missed"], streak, footer_font, pool)
 
@@ -526,7 +530,8 @@ def render_month(year: int, month: int) -> bytes:
     return out.getvalue()
 
 
-def render_week_strip(end_day: Optional[date] = None) -> bytes:
+def render_week_strip(end_day: Optional[date] = None,
+                      show_streak: bool = True) -> bytes:
     if end_day is None:
         end_day = datetime.now(TZ).date()
     start_day = end_day - timedelta(days=6)
@@ -609,7 +614,7 @@ def render_week_strip(end_day: Optional[date] = None) -> bytes:
                                    outline=TODAY_INK, width=3)
 
     cnt = storage.counts(start_day, end_day)
-    streak = storage.current_streak()
+    streak = storage.current_streak() if show_streak else None
     legend_top = pad + title_h + weekday_h + cell + legend_gap
     _draw_legend(draw, img, width, legend_top, footer_h,
                  cnt["taken"], cnt["missed"], streak, footer_font, pool)

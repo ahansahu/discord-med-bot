@@ -348,7 +348,7 @@ async def cmd_history(
                 "that month is in the future.", ephemeral=True)
             return
         await interaction.response.defer(thinking=True)
-        png = chart.render_month(resolved_year, month)
+        png = chart.render_month(resolved_year, month, show_streak=False)
         file = discord.File(io.BytesIO(png), filename=f"{resolved_year}-{month:02d}.png")
         start = date(resolved_year, month, 1)
         end = date(resolved_year, month, calendar.monthrange(resolved_year, month)[1])
@@ -383,7 +383,7 @@ async def cmd_history(
                 "that date is in the future.", ephemeral=True)
             return
         await interaction.response.defer(thinking=True)
-        png = chart.render_week_strip(end_day=end_day)
+        png = chart.render_week_strip(end_day=end_day, show_streak=False)
         file = discord.File(io.BytesIO(png), filename=f"week-{end_day.isoformat()}.png")
         start = end_day - timedelta(days=6)
         cnt = storage.counts(start, end_day)
