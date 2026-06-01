@@ -22,8 +22,14 @@ CUSTOM_PREFIX = "custom_"
 ASSETS_DIR = Path(__file__).parent / "assets"
 DECOR_DIR = ASSETS_DIR / "decor"
 FONT_DIR = ASSETS_DIR / "fonts"
-BG_PATH = DECOR_DIR / "background.png"
-BG_PATH_WEEK = DECOR_DIR / "background_week.png"
+def _bg_path(month: int) -> Path:
+    specific = DECOR_DIR / f"background_{month:02d}.png"
+    return specific if specific.exists() else DECOR_DIR / "background.png"
+
+
+def _bg_path_week(month: int) -> Path:
+    specific = DECOR_DIR / f"background_week_{month:02d}.png"
+    return specific if specific.exists() else DECOR_DIR / "background_week.png"
 SERIF_FONT_CANDIDATES = [
     (FONT_DIR / "Fraunces-VF.ttf", "SemiBold"),
     (FONT_DIR / "PlayfairDisplay-VF.ttf", "Bold"),
@@ -345,7 +351,7 @@ CELL_RADIUS = 6
 
 def _draw_legend(draw: ImageDraw.ImageDraw, img: Image.Image,
                  image_w: int, footer_top: int, footer_h: int,
-                 taken: int, missed: int, streak: int,
+                 taken: int, missed: int, streak: Optional[int],
                  font: ImageFont.ImageFont, pool: list) -> None:
     cy = footer_top + footer_h // 2
     icon_size = 18
@@ -353,10 +359,13 @@ def _draw_legend(draw: ImageDraw.ImageDraw, img: Image.Image,
     seg_gap = 22
     pill_pad_x = 20
 
-    streak_text = f"Streak {streak} day{'s' if streak != 1 else ''}"
-    labels = [f"Taken {taken}", f"Missed {missed}", streak_text]
+    # `streak` is None for historical charts, where "current streak" would be
+    # misleading — that segment is dropped entirely.
+    labels = [f"Taken {taken}", f"Missed {missed}"]
+    if streak is not None:
+        labels.append(f"Streak {streak} day{'s' if streak != 1 else ''}")
     seg_widths = [icon_size + gap + int(draw.textlength(lbl, font=font)) for lbl in labels]
-    content_w = sum(seg_widths) + seg_gap * 2
+    content_w = sum(seg_widths) + seg_gap * (len(labels) - 1)
     pill_w = content_w + pill_pad_x * 2
     pill_h = 40
     pill_x = (image_w - pill_w) // 2
@@ -389,9 +398,10 @@ def _draw_legend(draw: ImageDraw.ImageDraw, img: Image.Image,
     draw.line([(xcx - xr, cy + xr), (xcx + xr, cy - xr)], fill=MISSED_FG, width=4)
     draw.text((sx + icon_size + gap, text_y), labels[1], fill=LEGEND_FG, font=font)
 
-    sx = start_x + seg_widths[0] + seg_widths[1] + seg_gap * 2
-    _draw_streak_icon(draw, img, sx, cy, icon_size, pool)
-    draw.text((sx + icon_size + gap, text_y), labels[2], fill=LEGEND_FG, font=font)
+    if streak is not None:
+        sx = start_x + seg_widths[0] + seg_widths[1] + seg_gap * 2
+        _draw_streak_icon(draw, img, sx, cy, icon_size, pool)
+        draw.text((sx + icon_size + gap, text_y), labels[2], fill=LEGEND_FG, font=font)
 
 
 def _draw_streak_icon(draw: ImageDraw.ImageDraw, img: Image.Image,
@@ -421,7 +431,7 @@ def _draw_streak_icon(draw: ImageDraw.ImageDraw, img: Image.Image,
     img.paste(sun, (sx, cy - icon_size // 2), sun)
 
 
-def render_month(year: int, month: int) -> bytes:
+def render_month(year: int, month: int, show_streak: bool = True) -> bytes:
     cell = 95
     pad = 44
     cols = 7
@@ -436,9 +446,10 @@ def render_month(year: int, month: int) -> bytes:
     height = pad * 2 + title_h + weekday_h + rows * cell + footer_h
 
     img = Image.new("RGBA", (width, height), BG + (255,))
-    if BG_PATH.exists():
+    bg_path = _bg_path(month)
+    if bg_path.exists():
         try:
-            bg = Image.open(BG_PATH).convert("RGBA")
+            bg = Image.open(bg_path).convert("RGBA")
             scale = max(width / bg.width, height / bg.height)
             sw, sh = int(bg.width * scale), int(bg.height * scale)
             bg = bg.resize((sw, sh), Image.LANCZOS)
@@ -447,7 +458,7 @@ def render_month(year: int, month: int) -> bytes:
             bg = bg.crop((ox, oy, ox + width, oy + height))
             img.paste(bg, (0, 0), bg)
         except Exception as e:
-            log.warning("could not load decor background %s: %s", BG_PATH, e)
+            log.warning("could not load decor background %s: %s", bg_path, e)
     draw = ImageDraw.Draw(img, "RGBA")
 
     title_font = _load_font(36, prefer_serif=True)
@@ -510,7 +521,7 @@ def render_month(year: int, month: int) -> bytes:
 
     # footer
     cnt = storage.counts(start, end)
-    streak = storage.current_streak()
+    streak = storage.current_streak() if show_streak else None
     _draw_legend(draw, img, width, height - footer_h, footer_h,
                  cnt["taken"], cnt["missed"], streak, footer_font, pool)
 
@@ -519,7 +530,8 @@ def render_month(year: int, month: int) -> bytes:
     return out.getvalue()
 
 
-def render_week_strip(end_day: Optional[date] = None) -> bytes:
+def render_week_strip(end_day: Optional[date] = None,
+                      show_streak: bool = True) -> bytes:
     if end_day is None:
         end_day = datetime.now(TZ).date()
     start_day = end_day - timedelta(days=6)
@@ -536,9 +548,10 @@ def render_week_strip(end_day: Optional[date] = None) -> bytes:
     height = pad + title_h + weekday_h + cell + legend_gap + footer_h + bottom_pad
 
     img = Image.new("RGBA", (width, height), BG + (255,))
-    if BG_PATH_WEEK.exists():
+    bg_path = _bg_path_week(end_day.month)
+    if bg_path.exists():
         try:
-            bg = Image.open(BG_PATH_WEEK).convert("RGBA")
+            bg = Image.open(bg_path).convert("RGBA")
             scale = max(width / bg.width, height / bg.height)
             sw, sh = int(bg.width * scale), int(bg.height * scale)
             bg = bg.resize((sw, sh), Image.LANCZOS)
@@ -547,7 +560,7 @@ def render_week_strip(end_day: Optional[date] = None) -> bytes:
             bg = bg.crop((ox, oy, ox + width, oy + height))
             img.paste(bg, (0, 0), bg)
         except Exception as e:
-            log.warning("could not load decor background %s: %s", BG_PATH_WEEK, e)
+            log.warning("could not load decor background %s: %s", bg_path, e)
     draw = ImageDraw.Draw(img, "RGBA")
 
     title_font = _load_font(36, prefer_serif=True)
@@ -601,7 +614,7 @@ def render_week_strip(end_day: Optional[date] = None) -> bytes:
                                    outline=TODAY_INK, width=3)
 
     cnt = storage.counts(start_day, end_day)
-    streak = storage.current_streak()
+    streak = storage.current_streak() if show_streak else None
     legend_top = pad + title_h + weekday_h + cell + legend_gap
     _draw_legend(draw, img, width, legend_top, footer_h,
                  cnt["taken"], cnt["missed"], streak, footer_font, pool)

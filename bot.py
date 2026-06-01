@@ -1,7 +1,8 @@
+import calendar
 import io
 import logging
 import random
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import aiohttp
 import discord
@@ -305,6 +306,92 @@ async def cmd_chart(interaction: discord.Interaction) -> None:
     if await _wrong_channel(interaction):
         return
     await _send_month(interaction)
+
+
+@bot.tree.command(name="history", description="View a sticker chart for a past month or week.")
+@app_commands.describe(
+    period="'month' for a full calendar month or 'week' for a 7-day strip.",
+    month="Month number (1–12).",
+    year="Year (defaults to current year).",
+    end_date="For week view: end date in YYYY-MM-DD format (overrides month/year).",
+)
+@app_commands.choices(period=[
+    app_commands.Choice(name="month", value="month"),
+    app_commands.Choice(name="week", value="week"),
+])
+async def cmd_history(
+    interaction: discord.Interaction,
+    period: app_commands.Choice[str],
+    month: int | None = None,
+    year: int | None = None,
+    end_date: str | None = None,
+) -> None:
+    if not _is_target(interaction.user.id):
+        await interaction.response.send_message(
+            "this bot only tracks one user 🙏", ephemeral=True)
+        return
+
+    now = datetime.now(TZ).date()
+    resolved_year = year if year is not None else now.year
+
+    if period.value == "month":
+        if month is None:
+            await interaction.response.send_message(
+                "please provide a `month` (1–12).", ephemeral=True)
+            return
+        if not 1 <= month <= 12:
+            await interaction.response.send_message(
+                "month must be between 1 and 12.", ephemeral=True)
+            return
+        if date(resolved_year, month, 1) > now:
+            await interaction.response.send_message(
+                "that month is in the future.", ephemeral=True)
+            return
+        await interaction.response.defer(thinking=True)
+        png = chart.render_month(resolved_year, month, show_streak=False)
+        file = discord.File(io.BytesIO(png), filename=f"{resolved_year}-{month:02d}.png")
+        start = date(resolved_year, month, 1)
+        end = date(resolved_year, month, calendar.monthrange(resolved_year, month)[1])
+        cnt = storage.counts(start, end)
+        summary = (
+            f"**{calendar.month_name[month]} {resolved_year}** (historical)\n"
+            f"taken **{cnt['taken']}** · missed **{cnt['missed']}** · pending **{cnt['pending']}**"
+        )
+        await interaction.followup.send(content=summary, file=file)
+
+    else:  # week
+        if end_date is not None:
+            try:
+                end_day = date.fromisoformat(end_date)
+            except ValueError:
+                await interaction.response.send_message(
+                    "invalid date — use YYYY-MM-DD format.", ephemeral=True)
+                return
+        elif month is not None:
+            if not 1 <= month <= 12:
+                await interaction.response.send_message(
+                    "month must be between 1 and 12.", ephemeral=True)
+                return
+            end_day = date(resolved_year, month, calendar.monthrange(resolved_year, month)[1])
+        else:
+            await interaction.response.send_message(
+                "for week view, provide either `end_date` (YYYY-MM-DD) or `month`.",
+                ephemeral=True)
+            return
+        if end_day > now:
+            await interaction.response.send_message(
+                "that date is in the future.", ephemeral=True)
+            return
+        await interaction.response.defer(thinking=True)
+        png = chart.render_week_strip(end_day=end_day, show_streak=False)
+        file = discord.File(io.BytesIO(png), filename=f"week-{end_day.isoformat()}.png")
+        start = end_day - timedelta(days=6)
+        cnt = storage.counts(start, end_day)
+        summary = (
+            f"**Week {start.isoformat()} → {end_day.isoformat()}** (historical)\n"
+            f"taken **{cnt['taken']}** · missed **{cnt['missed']}** · pending **{cnt['pending']}**"
+        )
+        await interaction.followup.send(content=summary, file=file)
 
 
 @bot.tree.command(name="addsticker", description="Upload a custom sticker image.")
