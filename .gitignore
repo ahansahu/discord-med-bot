@@ -6,4 +6,7 @@ __pycache__/
 venv/
 .DS_Store
 assets/stickers/*.png
+# water-intake tier stickers are fixed assets (not DB-backed), so keep them
+# tracked — they must survive a fresh container/redeploy.
+!assets/stickers/water_tier_*.png
 out.png
